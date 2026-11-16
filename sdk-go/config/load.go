@@ -70,10 +70,12 @@ func Path() (string, bool) {
 // struct, or returns ErrNoDocument if no document is mounted for this run.
 //
 // The document is authoritative for every field it can represent: Load first
-// resets each such field of dst to its zero value, so a value a flag bound
-// into dst before Load ran doesn't survive for a field the document leaves
-// out. Fields the document can't represent (json:"-", unexported) keep their
-// values.
+// resets each such field to its zero value, so a value a flag bound into dst
+// before Load ran doesn't survive for a field the document leaves out. Fields
+// the document can't represent (json:"-", unexported) keep their values,
+// except under a pointer, slice, array, map or self-decoding field, which is
+// reset whole (see resetDocumentFields). Load changes dst only if the whole
+// document loads: on any error it returns, dst is as it was.
 //
 // Unknown fields in the document are rejected (json.Decoder's
 // DisallowUnknownFields, D-2). For every field absent from the document, Load
@@ -110,11 +112,15 @@ func Load(dst any) error {
 		return fmt.Errorf("config: Load requires a non-nil pointer to struct, got %T", dst)
 	}
 
-	resetDocumentFields(v.Elem())
+	// Load into a copy and write it back only once the whole document has
+	// loaded, so a document that fails leaves dst as it was.
+	work := reflect.New(v.Elem().Type())
+	work.Elem().Set(v.Elem())
+	resetDocumentFields(work.Elem())
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+	if err := dec.Decode(work.Interface()); err != nil {
 		return fmt.Errorf("config: decode %s: %w", path, err)
 	}
 
@@ -127,25 +133,26 @@ func Load(dst any) error {
 		return fmt.Errorf("config: decode %s: %w", path, err)
 	}
 
-	if err := applyStruct(v.Elem(), present); err != nil {
+	if err := applyStruct(work.Elem(), present); err != nil {
+		return err
+	}
+	if err := scanForUnresolvedSecrets(work.Elem(), ""); err != nil {
 		return err
 	}
 
-	return scanForUnresolvedSecrets(v.Elem(), "")
+	v.Elem().Set(work.Elem())
+	return nil
 }
 
-// applyStruct walks v's exported fields, applying schema defaults to fields
-// absent from present (D-14), recursing into nested struct fields with their
-// own sub-document's present map. The D-4 secret guard is a separate,
-// schema-blind pass (scanForUnresolvedSecrets) run once defaults are applied.
 // resetDocumentFields sets every field of the struct v that a config document
 // can represent back to its zero value (spec/config.md, loader precedence: a
 // present document is authoritative for every field it can represent).
-// Unexported and json:"-" fields keep their values. A nested struct is reset
-// field by field, so its own json:"-" fields keep theirs too, unless it
-// decodes as one value (json.Unmarshaler or encoding.TextUnmarshaler, such as
-// time.Time). Any other field, a pointer to a struct included, becomes its
-// zero value.
+// Unexported and json:"-" fields keep their values, and so do the json:"-"
+// fields of a nested struct value, which is reset field by field. A pointer,
+// slice, array or map field, or a struct that decodes as one value
+// (json.Unmarshaler or encoding.TextUnmarshaler, such as time.Time), is reset
+// whole, json:"-" fields under it included: an absent pointer group is nil
+// (D-14).
 func resetDocumentFields(v reflect.Value) {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
@@ -173,6 +180,10 @@ func decodesAsValue(t reflect.Type) bool {
 		pt.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
 }
 
+// applyStruct walks v's exported fields, applying schema defaults to fields
+// absent from present (D-14), recursing into nested struct fields with their
+// own sub-document's present map. The D-4 secret guard is a separate,
+// schema-blind pass (scanForUnresolvedSecrets) run once defaults are applied.
 func applyStruct(v reflect.Value, present map[string]json.RawMessage) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
