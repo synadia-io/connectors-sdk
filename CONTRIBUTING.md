@@ -46,33 +46,52 @@ commitlint checks every pull request. To check locally before you push:
 
 ## Releasing
 
-Each Go module is versioned on its own, with a tag prefixed by its directory:
-`sdk-go/vX.Y.Z`, `sdk-go/bloblang/vX.Y.Z`, `conformance/vX.Y.Z`.
+Each SDK is versioned on its own, with tags prefixed by its directory.
+`conformance` isn't released yet; when it is, its tags are
+`conformance/vX.Y.Z`.
+
+### The Go SDK
+
+The Go SDK is two modules, `sdk-go` and `sdk-go/bloblang`. They are released
+together, under one version, from one commit: `sdk-go/vX.Y.Z` and
+`sdk-go/bloblang/vX.Y.Z`.
 
 `sdk-go/bloblang` requires `sdk-go` by version. Its `replace` directive only
-applies inside this repository; anyone who imports `sdk-go/bloblang` gets at
-least the `sdk-go` version its `go.mod` requires. Inside the repository the
-`replace` and `go.work` hide that version, so a build here can pass while the
-release breaks for its users. When a bloblang release needs a newer `sdk-go`:
+applies inside this repository: anyone who imports `sdk-go/bloblang` gets at
+least the `sdk-go` version its `go.mod` requires. Releasing both from one
+commit, with that requirement set to the version being released, keeps the
+two in step.
 
-1. Tag `sdk-go` first and push the tag.
-2. Raise the `sdk-go` requirement in `sdk-go/bloblang/go.mod` to that tag.
-3. Check that `sdk-go/bloblang` builds against the released `sdk-go`:
+1. Open a release pull request. It sets the `sdk-go` requirement in
+   `sdk-go/bloblang/go.mod` to `vX.Y.Z`, the version being released, and its
+   description carries the release notes for both modules. Merge it.
+2. Tag the merge commit with both tags, signed, and push them in one push:
 
    ```bash
-   cd sdk-go/bloblang
-   go mod edit -dropreplace=github.com/synadia-io/connectors-sdk/sdk-go
-   GOWORK=off GOFLAGS=-mod=mod go test ./...
-   git checkout go.mod go.sum
+   git tag -s sdk-go/vX.Y.Z -m "sdk-go vX.Y.Z"
+   git tag -s sdk-go/bloblang/vX.Y.Z -m "sdk-go/bloblang vX.Y.Z"
+   git push origin sdk-go/vX.Y.Z sdk-go/bloblang/vX.Y.Z
    ```
 
-4. Tag `sdk-go/bloblang`.
+3. Check the release the way a user gets it, outside this repository:
 
-When both are released from one commit that already requires the new
-version, as v0.1.0 is, both tags go on that commit.
+   ```bash
+   cd "$(mktemp -d)" && go mod init example.com/check
+   go get github.com/synadia-io/connectors-sdk/sdk-go/bloblang@vX.Y.Z
+   go build github.com/synadia-io/connectors-sdk/sdk-go/...
+   go build github.com/synadia-io/connectors-sdk/sdk-go/bloblang
+   ```
+
+4. Ask the Go module proxy for both versions, so pkg.go.dev lists them:
+
+   ```bash
+   GOPROXY=https://proxy.golang.org go list -m github.com/synadia-io/connectors-sdk/sdk-go@vX.Y.Z
+   GOPROXY=https://proxy.golang.org go list -m github.com/synadia-io/connectors-sdk/sdk-go/bloblang@vX.Y.Z
+   ```
+
+5. Publish a GitHub release for each tag, with its notes.
 
 Never move or delete a tag once it has been pushed: the Go module proxy and
 checksum database keep the first content they see for a version. A bad
 release is fixed with a newer version, plus a `retract` directive in the
-module's `go.mod` for the bad one. Publish a GitHub release for each tag,
-with its notes.
+module's `go.mod` for the bad one.
