@@ -1,0 +1,10 @@
+{
+  "name": "mongodb",
+  "class": "source",
+  "image": "registry.example.com/connectors/mongodb@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "contract": "synadia.connector/v1",
+  "spec": "embedded",
+  "tier": 1,
+  "icon": "https://example.com/connectors/mongodb.svg",
+  "docs": "https://example.com/docs/connectors/mongodb"
+}

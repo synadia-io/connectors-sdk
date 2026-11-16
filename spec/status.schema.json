@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synadia.io/connector/v1/status.schema.json",
+  "title": "Connector status document",
+  "description": "The document published to a connector's status subject (D-5) and returned verbatim by its admin surface's `status` endpoint (D-8). See status.md for field-by-field prose.",
+  "type": "object",
+  "properties": {
+    "contract": {
+      "const": "synadia.connector/v1",
+      "description": "The contract version this status document implements (D-1)."
+    },
+    "state": {
+      "type": "string",
+      "enum": ["running", "paused", "parked", "failed", "restarting"],
+      "description": "Wire state (D-6), always lowercase."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Machine-readable reason for the current state. Empty string when state needs no explanation (e.g. running); always present as a key, per D-14's absence-vs-empty-value distinction — an empty reason is a value (\"nothing to report\"), not the field being left out."
+    },
+    "since": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp of the most recent state transition."
+    },
+    "cursor": {
+      "type": ["object", "null"],
+      "description": "Lag reporting (D-7). Null for a connector with no cursor concept (e.g. a sink). An object may report behind_ms, backfill, both, or neither, depending on connector phase.",
+      "properties": {
+        "behind_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "CDC lag: source-time delta in milliseconds. The one canonical lag number for a connector currently tailing changes. Never negative — a connector cannot be ahead of its own source."
+        },
+        "backfill": {
+          "type": "object",
+          "description": "Backfill progress. Deliberately has no percentage/denominator field (D-7) — one does not exist in general.",
+          "properties": {
+            "copied": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Count of items copied so far. Never negative — a count has no meaningful negative value."
+            },
+            "done": {
+              "type": "boolean",
+              "description": "Whether the backfill phase has completed."
+            }
+          },
+          "required": ["copied", "done"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "counters": {
+      "type": ["object", "null"],
+      "description": "Free-form named counters (e.g. published, errors). Null when the connector has none to report.",
+      "additionalProperties": { "type": "integer" }
+    },
+    "admin": {
+      "type": "string",
+      "description": "The connector's admin surface root subject (D-8), e.g. $CONNECTOR.<namespace>.admin.<instanceID>."
+    },
+    "connector_id": {
+      "type": "string",
+      "description": "Runtime identity (D-3): the durable connector id, or its fallback."
+    },
+    "workload_id": {
+      "type": "string",
+      "description": "Runtime identity (D-3): the ephemeral workload id, when the launcher provides one."
+    }
+  },
+  "required": [
+    "contract",
+    "state",
+    "reason",
+    "since",
+    "cursor",
+    "counters",
+    "admin",
+    "connector_id",
+    "workload_id"
+  ],
+  "additionalProperties": false
+}

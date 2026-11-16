@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synadia.io/connector/v1/manifest.schema.json",
+  "title": "Connector manifest",
+  "description": "The ten-line published artifact naming a connector image and where to find its config spec. See spec/manifest.md for field-by-field prose.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Connector identifier. Lowercase alphanumeric, may contain internal hyphens; must start with a letter or digit."
+    },
+    "class": {
+      "type": "string",
+      "enum": ["source", "sink"],
+      "description": "Which side of the data flow the connector occupies."
+    },
+    "image": {
+      "type": "string",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$",
+      "description": "Container image reference, digest-pinned. A mutable tag is rejected."
+    },
+    "contract": {
+      "const": "synadia.connector/v1",
+      "description": "The contract version this manifest and its image implement (D-1)."
+    },
+    "spec": {
+      "type": "string",
+      "anyOf": [
+        { "const": "embedded" },
+        { "pattern": "^[A-Za-z][A-Za-z0-9+.-]*://\\S+$" }
+      ],
+      "description": "Where to find the connector's config spec document: the literal \"embedded\" (invoke the image's `spec` entrypoint, D-11/D-12) or a URI to a catalog-hosted, pre-extracted spec document. The URI branch is matched by scheme prefix, not the (optionally-asserted) `format` keyword, so the distinction holds under every JSON Schema implementation."
+    },
+    "tier": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "description": "Support/maturity tier, 1 (highest) through 3."
+    },
+    "icon": {
+      "type": "string",
+      "description": "Optional display icon (URI or inline reference; rendering is catalog/UI concern)."
+    },
+    "docs": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional link to connector documentation."
+    }
+  },
+  "required": ["name", "class", "image", "contract", "spec"],
+  "additionalProperties": false
+}

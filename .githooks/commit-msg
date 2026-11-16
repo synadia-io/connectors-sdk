@@ -1,0 +1,33 @@
+#!/bin/sh
+# Local mirror of the commitlint rules that actually bite in CI
+# (.commitlintrc.mjs runs the full ruleset there). Dependency-free on
+# purpose — no node needed to commit. Enable once per clone:
+#   git config core.hooksPath .githooks
+header=$(head -n1 "$1")
+case "$header" in
+  Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+esac
+if ! printf '%s\n' "$header" | grep -qE '^(feat|fix|docs|test|refactor|perf|chore|ci|build|style|revert)\((sdk-go|spec|conformance|ci|repo)\)!?: .+'; then
+  echo "commit-msg: header must be type(scope): subject, scope one of {sdk-go,spec,conformance,ci,repo}" >&2
+  echo "commit-msg: got: $header" >&2
+  exit 1
+fi
+if [ "${#header}" -gt 100 ]; then
+  echo "commit-msg: header is ${#header} chars, max 100" >&2
+  exit 1
+fi
+# LC_ALL=C: a case-glob [A-Z] range is locale-collation-dependent and can
+# match lowercase; byte-exact class via grep is not.
+subject=${header#*: }
+if printf '%s' "$subject" | LC_ALL=C grep -q '^[A-Z]'; then
+  echo "commit-msg: subject must start lowercase (commitlint subject-case): $subject" >&2
+  exit 1
+fi
+while IFS= read -r line; do
+  case "$line" in \#*) continue ;; esac
+  if [ "${#line}" -gt 100 ]; then
+    echo "commit-msg: body line over 100 chars: ${line}" >&2
+    exit 1
+  fi
+done < "$1"
+exit 0

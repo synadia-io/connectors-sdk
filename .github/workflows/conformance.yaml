@@ -1,0 +1,32 @@
+# CI for the black-box contract suite and its sdk-go fixture. sdk-go/** and
+# spec/** are in the paths because the suite runs the fixture built on sdk-go
+# and validates against spec/*.schema.json.
+name: conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'conformance/**'
+      - 'sdk-go/**'
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/conformance.yaml'
+  pull_request:
+    paths:
+      - 'conformance/**'
+      - 'sdk-go/**'
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/conformance.yaml'
+
+jobs:
+  suite:
+    uses: ./.github/workflows/go-module.yaml
+    with:
+      dir: conformance
+      race: true
+  testconn:
+    uses: ./.github/workflows/go-module.yaml
+    with:
+      dir: conformance/testconn

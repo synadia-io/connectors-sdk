@@ -1,0 +1,22 @@
+# CI for the contract's own schema tests (schemas and examples validated
+# against each other).
+name: spec
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/spec.yaml'
+  pull_request:
+    paths:
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/spec.yaml'
+
+jobs:
+  spec:
+    uses: ./.github/workflows/go-module.yaml
+    with:
+      dir: spec

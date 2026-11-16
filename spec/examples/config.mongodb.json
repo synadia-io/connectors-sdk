@@ -1,0 +1,9 @@
+{
+  "mongo_uri": "mongodb://cluster0.example.net:27017/?authSource=admin",
+  "mongo_password": "secret://mongo/prod-cluster-password",
+  "database": "orders",
+  "collections": ["orders", "line_items"],
+  "js_stream": "ORDERS_EVENTS",
+  "transformer_type": "mapping",
+  "transformer_mapping": "root.order_id = this.orderId"
+}

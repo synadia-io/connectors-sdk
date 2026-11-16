@@ -1,0 +1,60 @@
+# Reusable CI for one Go module directory: gofmt + vet, then tests
+# (optionally under the race detector). Callers pass the directory and own
+# their `paths:` filters (see sdk-go.yaml, spec.yaml).
+name: go-module
+
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: Go module directory
+        required: true
+        type: string
+      race:
+        description: also run the tests under the race detector
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: ${{ inputs.dir }}/go.sum
+
+      - name: Check formatting and vet
+        working-directory: ${{ inputs.dir }}
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: ${{ inputs.dir }}/go.sum
+
+      - name: Run tests
+        working-directory: ${{ inputs.dir }}
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: go test -count=1 -cover ./...
+
+      - name: Run tests (race detector)
+        if: ${{ inputs.race }}
+        working-directory: ${{ inputs.dir }}
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: go test -count=1 -race ./...

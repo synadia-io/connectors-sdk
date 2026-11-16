@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synadia.io/connector/v1/x-display.schema.json",
+  "title": "x-display presentation hints",
+  "description": "Closed vocabulary (D-13) for the config_schema's x-display extension. Any property in a connector's config_schema (spec.md, contract.md D-12) may carry one of these objects under its own \"x-display\" key. additionalProperties is false: an unrecognized hint key is a publish-time schema-authoring error, not a silently-ignored typo.",
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string",
+      "description": "Human-readable field label for form rendering."
+    },
+    "group": {
+      "type": "string",
+      "description": "Groups fields under a shared heading in generated forms."
+    },
+    "order": {
+      "type": "integer",
+      "description": "Sort position within a group; lower values render first."
+    },
+    "placeholder": {
+      "type": "string",
+      "description": "Placeholder text shown in an empty input."
+    },
+    "hidden": {
+      "type": "boolean",
+      "description": "Field exists in the schema and config document but is not rendered in a form. Config-document rules (D-2, D-14) still apply in full — hidden is a rendering hint only."
+    },
+    "secret": {
+      "type": "boolean",
+      "description": "The field's ENTIRE value is a secret:// reference (D-4) — resolution requires the whole string to start with the prefix; there is no partial/mid-string resolution. Mutually exclusive with secret_parts (enforced by this schema's root `not`): a field is either a whole-value secret reference, or a plain value that may get UI display-masking on named components, never both."
+    },
+    "secret_parts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["userinfo", "query", "fragment"]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Display-masking only — this hint never causes secret:// substitution inside a value (a whole-value secret:// reference in the field still resolves under config.md's document-wide rule). It marks which URL component(s) of a composite value, such as a connection URI, a rendering client should mask from view. A field needing a real, resolvable credential inside a composite value decomposes that credential into its own `secret: true` leaf field instead (see config.md's worked example); this hint does not make that unnecessary. Mutually exclusive with secret (enforced by this schema's root `not`)."
+    },
+    "visible_when": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": true,
+      "description": "Map of fieldName -> required value. The field carrying this hint is shown in a rendered form only while every named field currently holds the given value. Conditional JSON Schema validation (allOf/if/then) is DERIVED from this map by generators — schema authors never hand-write the equivalent allOf themselves (D-13)."
+    },
+    "cp-type": {
+      "type": "string",
+      "enum": ["subject", "stream", "bucket"],
+      "description": "Marks the field as naming a NATS resource of this kind, enabling control-plane affordances (e.g. a stream picker) for the field."
+    },
+    "code": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "Editor syntax-highlighting language id, e.g. \"bloblang\"."
+        }
+      },
+      "required": ["language"],
+      "additionalProperties": false,
+      "description": "Field is rendered as a multiline code editor instead of a single-line input."
+    }
+  },
+  "additionalProperties": false,
+  "not": {
+    "required": ["secret", "secret_parts"]
+  }
+}

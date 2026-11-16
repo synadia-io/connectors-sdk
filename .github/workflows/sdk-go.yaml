@@ -1,0 +1,33 @@
+# CI for the Go SDK modules. Race detector is on: the transform.Func
+# ownership/aliasing contract test is designed for it, and the bloblang
+# inventory tripwire (unreviewed-function detection after a benthos bump)
+# only guards upgrades if it actually runs here. spec/** is in the paths
+# because the SDK's tests validate against spec/*.schema.json.
+name: sdk-go
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk-go/**'
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/sdk-go.yaml'
+  pull_request:
+    paths:
+      - 'sdk-go/**'
+      - 'spec/**'
+      - '.github/workflows/go-module.yaml'
+      - '.github/workflows/sdk-go.yaml'
+
+jobs:
+  transform:
+    uses: ./.github/workflows/go-module.yaml
+    with:
+      dir: sdk-go
+      race: true
+  bloblang:
+    uses: ./.github/workflows/go-module.yaml
+    with:
+      dir: sdk-go/bloblang
+      race: true

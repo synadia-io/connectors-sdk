@@ -1,0 +1,19 @@
+{
+  "contract": "synadia.connector/v1",
+  "state": "parked",
+  "reason": "unresolved-secret",
+  "since": "2026-08-27T12:00:00Z",
+  "cursor": {
+    "backfill": {
+      "copied": 128000,
+      "done": false
+    }
+  },
+  "counters": {
+    "published": 128000,
+    "errors": 0
+  },
+  "admin": "$CONNECTOR.prod.admin.mongodb-orders",
+  "connector_id": "mongodb-orders",
+  "workload_id": "wl-8f3a2c"
+}

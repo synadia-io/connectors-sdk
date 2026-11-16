@@ -1,0 +1,94 @@
+{
+  "contract": "synadia.connector/v1",
+  "capabilities": ["check", "status", "park", "transform:mapping"],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "mongodb connector config",
+    "type": "object",
+    "properties": {
+      "mongo_uri": {
+        "type": "string",
+        "minLength": 1,
+        "x-display": {
+          "label": "MongoDB URI",
+          "group": "Connection",
+          "order": 1,
+          "secret_parts": ["userinfo"]
+        }
+      },
+      "mongo_password": {
+        "type": "string",
+        "minLength": 1,
+        "x-display": {
+          "label": "MongoDB Password",
+          "group": "Connection",
+          "order": 2,
+          "secret": true
+        }
+      },
+      "database": {
+        "type": "string",
+        "minLength": 1,
+        "x-display": {
+          "label": "Database",
+          "group": "Connection",
+          "order": 3
+        }
+      },
+      "collections": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1,
+        "x-display": {
+          "label": "Collections",
+          "group": "Connection",
+          "order": 4
+        }
+      },
+      "js_stream": {
+        "type": "string",
+        "minLength": 1,
+        "x-display": {
+          "label": "Output stream",
+          "group": "Output",
+          "order": 1,
+          "cp-type": "stream"
+        }
+      },
+      "transformer_type": {
+        "type": "string",
+        "enum": ["none", "mapping"],
+        "default": "none",
+        "x-display": {
+          "label": "Transformer",
+          "group": "Transform",
+          "order": 1
+        }
+      },
+      "transformer_mapping": {
+        "type": "string",
+        "default": "",
+        "x-display": {
+          "label": "Mapping",
+          "group": "Transform",
+          "order": 2,
+          "code": { "language": "bloblang" },
+          "visible_when": { "transformer_type": "mapping" }
+        }
+      }
+    },
+    "required": ["mongo_uri", "mongo_password", "database", "collections", "js_stream"],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": { "transformer_type": { "const": "mapping" } },
+          "required": ["transformer_type"]
+        },
+        "then": {
+          "required": ["transformer_mapping"]
+        }
+      }
+    ]
+  }
+}
