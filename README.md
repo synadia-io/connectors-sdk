@@ -24,7 +24,7 @@ v1.0.0.
 |---|---|---|
 | [`sdk-go`](sdk-go) | Go SDK: the connector harness and the contract packages | [![Go Reference][sdk-go-image]][sdk-go-url] |
 | [`sdk-go/bloblang`](sdk-go/bloblang) | Bloblang `mapping` transform backend, in its own module so the benthos dependency graph stays out of `sdk-go` | [![Go Reference][bloblang-image]][bloblang-url] |
-| [`conformance`](conformance) | Black-box contract suite that every SDK's fixture connector must pass, with importable helpers for connector suites | [![Go Reference][conformance-image]][conformance-url] |
+| [`conformance`](conformance) | Black-box contract suite that every SDK's fixture connector must pass, with importable helpers for connector suites. Not released yet | [README](conformance/README.md) |
 | [`spec`](spec) | The connector contract: normative docs and JSON Schemas | [README](spec/README.md) |
 
 ## Installation
@@ -122,11 +122,12 @@ SDKs for other languages go in sibling directories (`sdk-<lang>/`).
 
 ## Versioning
 
-Each Go module is tagged with its directory as the prefix:
-`sdk-go/vX.Y.Z`, `sdk-go/bloblang/vX.Y.Z`, `conformance/vX.Y.Z`. The
-contract has its own identifier, `synadia.connector/v1`
-([spec/contract.md](spec/contract.md)), which does not change with SDK
-releases.
+Each SDK is versioned on its own, with tags prefixed by its directory. The
+Go SDK is two modules, `sdk-go` and `sdk-go/bloblang`, released together
+under one version: `sdk-go/vX.Y.Z` and `sdk-go/bloblang/vX.Y.Z`.
+`conformance` isn't released yet. The contract has its own identifier,
+`synadia.connector/v1` ([spec/contract.md](spec/contract.md)), which does
+not change with SDK releases.
 
 ## Contributing
 
@@ -148,5 +149,3 @@ Apache 2.0. See [LICENSE](LICENSE).
 [sdk-go-image]: https://pkg.go.dev/badge/github.com/synadia-io/connectors-sdk/sdk-go.svg
 [bloblang-url]: https://pkg.go.dev/github.com/synadia-io/connectors-sdk/sdk-go/bloblang
 [bloblang-image]: https://pkg.go.dev/badge/github.com/synadia-io/connectors-sdk/sdk-go/bloblang.svg
-[conformance-url]: https://pkg.go.dev/github.com/synadia-io/connectors-sdk/conformance
-[conformance-image]: https://pkg.go.dev/badge/github.com/synadia-io/connectors-sdk/conformance.svg
