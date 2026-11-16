@@ -21,6 +21,7 @@ package config
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +69,12 @@ func Path() (string, bool) {
 // Load reads the mounted config document (D-2) into dst, a pointer to a
 // struct, or returns ErrNoDocument if no document is mounted for this run.
 //
+// The document is authoritative for every field it can represent: Load first
+// resets each such field of dst to its zero value, so a value a flag bound
+// into dst before Load ran doesn't survive for a field the document leaves
+// out. Fields the document can't represent (json:"-", unexported) keep their
+// values.
+//
 // Unknown fields in the document are rejected (json.Decoder's
 // DisallowUnknownFields, D-2). For every field absent from the document, Load
 // applies the field's `schema:"default=..."` struct-tag value, if any (D-14);
@@ -103,6 +110,8 @@ func Load(dst any) error {
 		return fmt.Errorf("config: Load requires a non-nil pointer to struct, got %T", dst)
 	}
 
+	resetDocumentFields(v.Elem())
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -129,6 +138,41 @@ func Load(dst any) error {
 // absent from present (D-14), recursing into nested struct fields with their
 // own sub-document's present map. The D-4 secret guard is a separate,
 // schema-blind pass (scanForUnresolvedSecrets) run once defaults are applied.
+// resetDocumentFields sets every field of the struct v that a config document
+// can represent back to its zero value (spec/config.md, loader precedence: a
+// present document is authoritative for every field it can represent).
+// Unexported and json:"-" fields keep their values. A nested struct is reset
+// field by field, so its own json:"-" fields keep theirs too, unless it
+// decodes as one value (json.Unmarshaler or encoding.TextUnmarshaler, such as
+// time.Time). Any other field, a pointer to a struct included, becomes its
+// zero value.
+func resetDocumentFields(v reflect.Value) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported
+		}
+		if _, skip := spec.JSONFieldName(field); skip {
+			continue
+		}
+		fv := v.Field(i)
+		if field.Type.Kind() == reflect.Struct && !decodesAsValue(field.Type) {
+			resetDocumentFields(fv)
+			continue
+		}
+		fv.SetZero()
+	}
+}
+
+// decodesAsValue reports whether encoding/json decodes t as one value through
+// its own unmarshaler rather than field by field.
+func decodesAsValue(t reflect.Type) bool {
+	pt := reflect.PointerTo(t)
+	return pt.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
+		pt.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
+}
+
 func applyStruct(v reflect.Value, present map[string]json.RawMessage) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {

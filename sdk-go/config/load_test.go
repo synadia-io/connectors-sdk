@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/synadia-io/connectors-sdk/sdk-go/config"
 )
@@ -300,5 +301,63 @@ func TestLoad_NestedUnresolvedSecretGuard(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "group.token") {
 		t.Fatalf("Load() error = %v, want it to name group.token", err)
+	}
+}
+
+// flagBoundConfig is a config struct the way connectors bind flags into it:
+// flag.StringVar(&cfg.Field, ...) fills the fields before Load runs. LogLevel
+// stands for a process-level knob the document can't carry (json:"-").
+type flagBoundConfig struct {
+	Subject  string       `json:"subject"`
+	Greeting string       `json:"greeting" schema:"default=hello"`
+	Extra    string       `json:"extra"`
+	Group    nestedGroup  `json:"group"`
+	Opt      *nestedGroup `json:"opt"`
+	At       time.Time    `json:"at"`
+	LogLevel string       `json:"-"`
+}
+
+// TestLoad_DocumentModeIgnoresFlagValues pins spec/config.md's loader
+// precedence: with a config document present, the document is
+// authoritative for every field it can represent. A field the document
+// leaves out gets its schema default or its zero value (D-14), never the
+// value a flag put there before Load ran. A field the document can't
+// represent (json:"-") keeps its flag value.
+func TestLoad_DocumentModeIgnoresFlagValues(t *testing.T) {
+	dir := t.TempDir()
+	setDocEnv(t, writeDoc(t, dir, `{"subject": "from-doc"}`))
+
+	cfg := flagBoundConfig{
+		Subject:  "from-flag",
+		Greeting: "from-flag",
+		Extra:    "from-flag",
+		Group:    nestedGroup{Region: "from-flag", Token: "from-flag"},
+		Opt:      &nestedGroup{Region: "from-flag"},
+		At:       time.Unix(1, 0),
+		LogLevel: "debug",
+	}
+	if err := config.Load(&cfg); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Subject != "from-doc" {
+		t.Errorf("Subject = %q, want %q from the document", cfg.Subject, "from-doc")
+	}
+	if cfg.Greeting != "hello" {
+		t.Errorf("Greeting = %q, want the schema default %q", cfg.Greeting, "hello")
+	}
+	if cfg.Extra != "" {
+		t.Errorf("Extra = %q, want the zero value", cfg.Extra)
+	}
+	if cfg.Group.Region != "us-east-1" || cfg.Group.Token != "" {
+		t.Errorf("Group = %+v, want the nested default region and an empty token", cfg.Group)
+	}
+	if cfg.Opt != nil {
+		t.Errorf("Opt = %+v, want nil for an absent pointer group", cfg.Opt)
+	}
+	if !cfg.At.IsZero() {
+		t.Errorf("At = %v, want the zero time", cfg.At)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want the flag value %q kept", cfg.LogLevel, "debug")
 	}
 }
