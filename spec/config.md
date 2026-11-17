@@ -48,8 +48,8 @@ document fields for that run. Flags remain available in every
 entrypoint mode (D-11) for the fields config-document mode doesn't
 cover (e.g. `--config-file` itself, log level, or a genuinely
 process-level knob outside the schema) and for connectors run without
-a mounted document at all. A connector's `Load` (`sdk-go/config`)
-implements exactly this:
+a mounted document at all. **In the Go SDK**, `config.Load` implements
+exactly this:
 document present -> parse and validate it exclusively; document absent
 -> fall back to flags.
 
@@ -104,9 +104,10 @@ hints answer different questions and combining them on one field is a
 contradiction, not a richer declaration.
 
 Resolution happens **node-side**, in the nexlet, before the config
-document is ever mounted into the connector's container — through
-nex's `models.SecretStore.GetSecret(namespace, id)`, applied to every
-string field in the document (schema-blind, per above). By the time a
+document is ever mounted into the connector's container: the launcher
+looks each reference up in its secret store by (namespace, id) and
+substitutes the value, for every string field in the document
+(schema-blind, per above). By the time a
 connector reads its config document, no field anywhere should still
 hold a `secret://` value — resolved fields hold the real value in
 full, replacing the reference outright, and every other field never

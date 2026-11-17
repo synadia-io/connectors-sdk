@@ -95,7 +95,10 @@ replace `$JS.API.` in the rows above with that prefix, and grant
 - **Work with resources an operator created.** Under the least-privilege
   profile a connector can't create or change its stream, durable or
   bucket, so it validates what is there instead. `sdk-go/jsresource`
-  creates only what is missing, and validates what exists.
+  creates only what is missing and validates what exists; it changes
+  an existing stream only when the connector opts into `UpdateAdditive`
+  (appending missing subjects and, when the connector asks for atomic
+  publish, enabling it), which needs the `STREAM.UPDATE` grant.
 - **Don't check the credential.** A connector can't read its own
   permission set, so it doesn't test it or refuse to start over it.
 - **Tolerate a second instance.** Two instances of a connector can

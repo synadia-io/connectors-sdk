@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://synadia.io/connector/v1/x-display.schema.json",
   "title": "x-display presentation hints",
-  "description": "Closed vocabulary (D-13) for the config_schema's x-display extension. Any property in a connector's config_schema (spec.md, contract.md D-12) may carry one of these objects under its own \"x-display\" key. additionalProperties is false: an unrecognized hint key is a publish-time schema-authoring error, not a silently-ignored typo.",
+  "description": "Closed vocabulary (D-13) for the config_schema's x-display extension. Any property in a connector's config_schema (contract.md, \"Spec document\", D-12) may carry one of these objects under its own \"x-display\" key. additionalProperties is false: an unrecognized hint key is a publish-time schema-authoring error, not a silently-ignored typo.",
   "type": "object",
   "properties": {
     "label": {
