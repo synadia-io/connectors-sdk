@@ -1,4 +1,14 @@
-# Working files from planning and review tools. Design research,
-# implementation plans and review handoffs are not committed (docs/README.md).
+# Working files: design research, implementation plans and review handoffs
+# are not committed (docs/README.md).
 docs/research/
 docs/superpowers/
+
+# Build and test output.
+conformance/testconn/testconn
+*.test
+*.out
+
+# Editors and operating systems.
+.DS_Store
+.idea/
+.vscode/
