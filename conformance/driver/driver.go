@@ -14,8 +14,7 @@
 // Package driver builds and black-box-drives a connector binary over the nex
 // launch contract (NEX_WORKLOAD_* env seam) — the language-agnostic mechanism
 // of the conformance tier: any connector directory that produces a binary can
-// be driven, whatever it is written in. Generalized from the s3native
-// prototype in the connectors-onboard e2e harness.
+// be driven, whatever it is written in.
 package driver
 
 import (
@@ -203,13 +202,12 @@ func (p *Proc) WaitOutput(t *testing.T, substr string, timeout time.Duration) {
 
 // KillNow sends SIGKILL — an uncatchable, unrecoverable termination, unlike
 // StopGraceful's SIGTERM — and blocks until the OS has reaped the process.
-// This is the real-crash primitive: every other "restart" scenario in this
-// repo before it (e.g. mongodb/harness_park_test.go's SIGTERM-then-check
-// pattern) exercises an in-process ctx-cancel or a graceful shutdown, never
-// an actual crash window where the process has no chance to run any unwind
-// code at all. A caller restarts by spawning a fresh Proc (Spawn/
-// SpawnWithConfig) with the same identity/config after calling this, exactly
-// as a supervisor would after an OOM-kill or a `kill -9`.
+// This is the real-crash primitive: every other "restart" path exercises an
+// in-process ctx-cancel or a graceful shutdown, never an actual crash window
+// where the process has no chance to run any unwind code at all. A caller
+// restarts by spawning a fresh Proc (Spawn/SpawnWithConfig) with the same
+// identity/config after calling this, exactly as a supervisor would after an
+// OOM-kill or a `kill -9`.
 func (p *Proc) KillNow(t *testing.T) {
 	t.Helper()
 	if err := p.cmd.Process.Kill(); err != nil {
@@ -337,17 +335,15 @@ func WatchStatus(t *testing.T, nc *nats.Conn, namespace, instanceID string) *Sta
 // that already happened (e.g. the connector parked before WaitFor was
 // called) still matches instead of hanging.
 //
-// The scan cursor (w.checked) is a field on the WATCHER, not a local
-// variable reset on every call: a document, once scanned by any call
-// (matched or not), is never reconsidered by a later one. Without this, a
-// second WaitFor for a predicate a document earlier in the stream already
-// satisfied — e.g. a connector's second WaitFor(state == "running") after a
-// resume, following a first WaitFor(state == "running") for the initial
-// boot — would trivially re-match that FIRST, already-consumed document
-// instead of waiting for the genuinely new one, silently turning the second
-// wait into a no-op rather than the synchronization point a caller
-// (conformance/contract_test.go's TestParkResumeSkip, TestStateTransition
-// Legality, TestStatusAllDocumentsValid) relies on it to be.
+// The scan cursor belongs to the watcher, not to the call: a document, once
+// scanned by any WaitFor (matched or not), is never reconsidered by a later
+// one. Without this, a second WaitFor for a predicate a document earlier in
+// the stream already satisfied — e.g. a second WaitFor(state == "running")
+// after a resume, following a first WaitFor(state == "running") for the
+// initial boot — would trivially re-match that first, already-consumed
+// document instead of waiting for the genuinely new one, silently turning
+// the second wait into a no-op rather than the synchronization point the
+// caller relies on it to be.
 func (w *StatusWatcher) WaitFor(t *testing.T, timeout time.Duration, pred func(StatusDoc) bool) StatusMsg {
 	t.Helper()
 	deadline := time.After(timeout)
