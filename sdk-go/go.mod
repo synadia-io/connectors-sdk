@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/nats-io/nats-server/v2 v2.14.3
-	github.com/nats-io/nats.go v1.53.1
+	github.com/nats-io/nats.go v1.56.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.uber.org/goleak v1.3.0
 )

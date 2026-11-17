@@ -3,7 +3,7 @@ module github.com/synadia-io/connectors-sdk/sdk-go/bloblang
 go 1.26.4
 
 require (
-	github.com/nats-io/nats.go v1.53.1
+	github.com/nats-io/nats.go v1.56.0
 	github.com/redpanda-data/benthos/v4 v4.77.0
 	github.com/synadia-io/connectors-sdk/sdk-go v0.1.0
 )
