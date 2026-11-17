@@ -171,10 +171,11 @@ func (c *controller) unpark(endpoint string, action func() error) error {
 // If ctx is already done when park is called, it returns false at once
 // without beginning a park: no park is begun once the shutdown signal has
 // arrived, so a stopping process can't leave a `parked` document on a
-// subject the next instance, with the same InstanceID, also uses. This only guarantees that a park observing ctx.Err() != nil at
-// its start doesn't begin; a park that started just before the signal
-// arrived is already past this check and may still publish a then-true
-// `parked` document before it unwinds.
+// subject the next instance, with the same InstanceID, also uses. This only
+// guarantees that a park observing ctx.Err() != nil at its start doesn't
+// begin; a park that started just before the signal arrived is already past
+// this check and may still publish a then-true `parked` document before it
+// unwinds.
 func (c *controller) park(ctx context.Context, reason string) bool {
 	// A park that hasn't begun yet when the shutdown signal has already
 	// arrived is not begun at all — see the doc comment above.

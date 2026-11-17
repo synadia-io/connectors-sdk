@@ -56,10 +56,11 @@ func WithErrorHandler(f func(error)) Option {
 //
 // A nil *Publisher is a valid no-op sink: every exported method is a no-op
 // (Snapshot returns the zero Document, which status.schema.json rejects;
-// Run returns immediately) rather than panicking. This lets connector code call the Publisher unconditionally,
-// with no nil guard at each call site, and still run in unit tests and other
-// harness-free contexts where no Publisher is wired. The harness itself
-// always constructs and passes a real Publisher.
+// Run returns immediately) rather than panicking. This lets connector code
+// call the Publisher unconditionally, with no nil guard at each call site,
+// and still run in unit tests and other harness-free contexts where no
+// Publisher is wired. The harness itself always constructs and passes a real
+// Publisher.
 //
 // A nil *Publisher is a no-op, but a non-nil Publisher{} literal is not
 // usable: construct one with NewPublisher.

@@ -229,7 +229,7 @@ func TestOpen_DefaultBucketNeedsAStableID(t *testing.T) {
 		{"connector id", "conn-1", "wl-1", "", "CONN-CKPT-conn-1"},
 		{"workload id only", "", "wl-1", "", ""},
 		{"workload id only, bucket named", "", "wl-1", "my-ckpt", "my-ckpt"},
-		{"neither", "", "", "", "CONN-CKPT-inlet-dev"},
+		{"neither", "", "", "", "CONN-CKPT-source-dev"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("NEX_WORKLOAD_CONNECTOR_ID", tt.connectorID)
@@ -243,7 +243,7 @@ func TestOpen_DefaultBucketNeedsAStableID(t *testing.T) {
 				open = untouchedJS{JetStream: js, t: t}
 			}
 
-			st, err := checkpoint.Open(context.Background(), open, identity.Detect("inlet"), checkpoint.Options{Bucket: tt.bucket})
+			st, err := checkpoint.Open(context.Background(), open, identity.Detect("source"), checkpoint.Options{Bucket: tt.bucket})
 			if tt.want == "" {
 				if !errors.Is(err, identity.ErrNoConnectorID) {
 					t.Fatalf("Open: err = %v, want ErrNoConnectorID", err)
@@ -332,7 +332,7 @@ func TestOpen_ScopeBindsThenMatches(t *testing.T) {
 	js := startJetStream(t)
 	ctx := context.Background()
 
-	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "inlet-v1:abc"}); err != nil {
+	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "source-v1:abc"}); err != nil {
 		t.Fatalf("first Open (binds scope): %v", err)
 	}
 	kv := bucketKV(t, js, identity.CheckpointBucket(testID))
@@ -340,14 +340,14 @@ func TestOpen_ScopeBindsThenMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(_scope) after first Open: %v", err)
 	}
-	if got := string(entry.Value()); got != "inlet-v1:abc" {
-		t.Errorf("_scope after first Open = %q, want %q", got, "inlet-v1:abc")
+	if got := string(entry.Value()); got != "source-v1:abc" {
+		t.Errorf("_scope after first Open = %q, want %q", got, "source-v1:abc")
 	}
 
-	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "inlet-v1:abc"}); err != nil {
+	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "source-v1:abc"}); err != nil {
 		t.Fatalf("second Open with the same scope: %v", err)
 	}
-	st, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "inlet-v1:other"})
+	st, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "source-v1:other"})
 	if !errors.Is(err, checkpoint.ErrScopeMismatch) {
 		t.Fatalf("Open with a different scope: err = %v, want ErrScopeMismatch", err)
 	}
@@ -358,8 +358,8 @@ func TestOpen_ScopeBindsThenMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(_scope) after mismatching Open: %v", err)
 	}
-	if got := string(entry.Value()); got != "inlet-v1:abc" {
-		t.Errorf("_scope after mismatching Open = %q, want unchanged %q", got, "inlet-v1:abc")
+	if got := string(entry.Value()); got != "source-v1:abc" {
+		t.Errorf("_scope after mismatching Open = %q, want unchanged %q", got, "source-v1:abc")
 	}
 }
 
@@ -663,7 +663,7 @@ func TestOpen_UnscopedOnBoundBucketFails(t *testing.T) {
 	js := startJetStream(t)
 	ctx := context.Background()
 
-	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "inlet-v1:abc"}); err != nil {
+	if _, err := checkpoint.Open(ctx, js, testID, checkpoint.Options{Scope: "source-v1:abc"}); err != nil {
 		t.Fatalf("first Open (binds scope): %v", err)
 	}
 
@@ -680,8 +680,8 @@ func TestOpen_UnscopedOnBoundBucketFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(_scope) after unscoped Open: %v", err)
 	}
-	if got := string(entry.Value()); got != "inlet-v1:abc" {
-		t.Errorf("_scope after unscoped Open = %q, want unchanged %q", got, "inlet-v1:abc")
+	if got := string(entry.Value()); got != "source-v1:abc" {
+		t.Errorf("_scope after unscoped Open = %q, want unchanged %q", got, "source-v1:abc")
 	}
 }
 

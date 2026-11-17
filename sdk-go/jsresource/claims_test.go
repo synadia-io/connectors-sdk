@@ -42,16 +42,16 @@ func startClaims(t *testing.T, allow ...string) jetstream.JetStream {
 	return connect(t, runServer(t, &opts), nats.UserInfo("conn", "conn"))
 }
 
-// TestClaimSetIsEnough runs an inlet and an outlet under credentials that
+// TestClaimSetIsEnough runs a source and a sink under credentials that
 // hold exactly the JS API subjects spec/credentials.md (D-10) lists, and
 // nothing else. If the SDK starts making another request, this fails, and
 // the claim set must grow with it.
 func TestClaimSetIsEnough(t *testing.T) {
 	ctx := context.Background()
-	inlet := []string{"$JS.API.STREAM.INFO.S", "$JS.API.STREAM.CREATE.S"}
+	source := []string{"$JS.API.STREAM.INFO.S", "$JS.API.STREAM.CREATE.S"}
 
-	t.Run("inlet", func(t *testing.T) {
-		js := startClaims(t, inlet...)
+	t.Run("source", func(t *testing.T) {
+		js := startClaims(t, source...)
 		for range 2 { // create, then find it on the next start
 			if _, err := jsresource.EnsureStream(ctx, js, jsresource.StreamSpec{
 				Name: "S", Subjects: []string{"events.s3"}, Timeout: time.Second,
@@ -64,8 +64,8 @@ func TestClaimSetIsEnough(t *testing.T) {
 		}
 	})
 
-	t.Run("inlet that reconciles", func(t *testing.T) {
-		js := startClaims(t, append(inlet, "$JS.API.STREAM.UPDATE.S")...)
+	t.Run("source that reconciles", func(t *testing.T) {
+		js := startClaims(t, append(source, "$JS.API.STREAM.UPDATE.S")...)
 		for _, subj := range []string{"events.a", "events.b"} {
 			if _, err := jsresource.EnsureStream(ctx, js, jsresource.StreamSpec{
 				Name: "S", Subjects: []string{subj}, AtomicPublish: true,
@@ -76,8 +76,8 @@ func TestClaimSetIsEnough(t *testing.T) {
 		}
 	})
 
-	t.Run("outlet", func(t *testing.T) {
-		js := startClaims(t, append(inlet,
+	t.Run("sink", func(t *testing.T) {
+		js := startClaims(t, append(source,
 			"$JS.API.CONSUMER.INFO.S.D",
 			// D has one filter, so its create request names it.
 			"$JS.API.CONSUMER.CREATE.S.D.events.s3",

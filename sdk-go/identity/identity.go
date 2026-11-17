@@ -16,7 +16,9 @@
 // (spec/status.md, D-5), the admin root subject (spec/admin.md, D-8), the
 // checkpoint bucket name (spec/checkpoint.md, D-9), and the default durable
 // consumer name are all pure functions of the Identity this package
-// resolves from environment variables the nexlet injects.
+// resolves from environment variables the nexlet injects. The nexlet is the
+// nex node agent that launches a connector; it injects the NEX_WORKLOAD_*
+// environment variables.
 //
 // This lives in its own package rather than sdk-go/runtime to avoid an
 // import cycle:
@@ -33,9 +35,8 @@ import (
 )
 
 const (
-	// envConnectorID is the durable connector id, injected by the nexlet
-	// from the start-request metadata key "connector_id" (spec/status.md,
-	// D-3).
+	// envConnectorID is the durable connector id the launcher assigns
+	// (spec/status.md, D-3).
 	envConnectorID = "NEX_WORKLOAD_CONNECTOR_ID"
 
 	// envNamespace is the namespace the connector runs in (spec/status.md,

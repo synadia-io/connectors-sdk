@@ -21,9 +21,9 @@
 // consumer reads ("a\r\nb" arrives as "a  b"), so a connector that wants a
 // different replacement makes it itself.
 //
-// The rules are those of nats.go v1.53.1. The tests check them against
-// nats.go itself rather than a copy, so a nats.go upgrade that changes one
-// fails them.
+// The rules are those of the nats.go version in go.mod. The tests check them
+// against nats.go itself rather than a copy, so a nats.go upgrade that
+// changes one fails them.
 package natsmsg
 
 import "github.com/nats-io/nats.go"
@@ -65,8 +65,8 @@ func Fits(data []byte, h nats.Header, maxPayload int64) bool {
 // ValidHeaderName reports whether nats.go will send a header with this name:
 // non-empty, printable ASCII (33 to 126), and none of `"(),/:;<=>?@[\]{}`.
 // A message with any other name fails to publish with nats.ErrBadHeaderMsg.
-// It mirrors nats.go's own check, and TestValidHeaderNameMatchesNATS holds it
-// to that check on every single-byte name.
+// It mirrors nats.go's own check, and the tests hold it to that check on
+// every single-byte name.
 func ValidHeaderName(name string) bool {
 	if name == "" {
 		return false
