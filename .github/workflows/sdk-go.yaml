@@ -21,7 +21,7 @@ on:
       - '.github/workflows/sdk-go.yaml'
 
 jobs:
-  transform:
+  sdk-go:
     uses: ./.github/workflows/go-module.yaml
     with:
       dir: sdk-go
