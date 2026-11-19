@@ -14,11 +14,14 @@
 package config_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/synadia-io/connectors-sdk/sdk-go/config"
 )
@@ -300,5 +303,198 @@ func TestLoad_NestedUnresolvedSecretGuard(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "group.token") {
 		t.Fatalf("Load() error = %v, want it to name group.token", err)
+	}
+}
+
+// flagBoundConfig is a config struct the way connectors bind flags into it:
+// flag.StringVar(&cfg.Field, ...) fills the fields before Load runs. LogLevel
+// stands for a process-level knob the document can't carry (json:"-").
+type flagBoundConfig struct {
+	Subject  string       `json:"subject"`
+	Greeting string       `json:"greeting" schema:"default=hello"`
+	Extra    string       `json:"extra"`
+	Group    nestedGroup  `json:"group"`
+	Opt      *nestedGroup `json:"opt"`
+	At       time.Time    `json:"at"`
+	LogLevel string       `json:"-"`
+}
+
+// TestLoad_DocumentModeIgnoresFlagValues pins spec/config.md's loader
+// precedence: with a config document present, the document is
+// authoritative for every field it can represent. A field the document
+// leaves out gets its schema default or its zero value (D-14), never the
+// value a flag put there before Load ran. A field the document can't
+// represent (json:"-") keeps its flag value.
+func TestLoad_DocumentModeIgnoresFlagValues(t *testing.T) {
+	dir := t.TempDir()
+	setDocEnv(t, writeDoc(t, dir, `{"subject": "from-doc"}`))
+
+	cfg := flagBoundConfig{
+		Subject:  "from-flag",
+		Greeting: "from-flag",
+		Extra:    "from-flag",
+		Group:    nestedGroup{Region: "from-flag", Token: "from-flag"},
+		Opt:      &nestedGroup{Region: "from-flag"},
+		At:       time.Unix(1, 0),
+		LogLevel: "debug",
+	}
+	if err := config.Load(&cfg); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Subject != "from-doc" {
+		t.Errorf("Subject = %q, want %q from the document", cfg.Subject, "from-doc")
+	}
+	if cfg.Greeting != "hello" {
+		t.Errorf("Greeting = %q, want the schema default %q", cfg.Greeting, "hello")
+	}
+	if cfg.Extra != "" {
+		t.Errorf("Extra = %q, want the zero value", cfg.Extra)
+	}
+	if cfg.Group.Region != "us-east-1" || cfg.Group.Token != "" {
+		t.Errorf("Group = %+v, want the nested default region and an empty token", cfg.Group)
+	}
+	if cfg.Opt != nil {
+		t.Errorf("Opt = %+v, want nil for an absent pointer group", cfg.Opt)
+	}
+	if !cfg.At.IsZero() {
+		t.Errorf("At = %v, want the zero time", cfg.At)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want the flag value %q kept", cfg.LogLevel, "debug")
+	}
+}
+
+// presetFlagBound returns a flagBoundConfig filled the way bound flags fill
+// one before Load runs.
+func presetFlagBound() flagBoundConfig {
+	return flagBoundConfig{
+		Subject:  "from-flag",
+		Greeting: "from-flag",
+		Extra:    "from-flag",
+		Group:    nestedGroup{Region: "from-flag", Token: "from-flag"},
+		Opt:      &nestedGroup{Region: "from-flag"},
+		At:       time.Unix(1, 0),
+		LogLevel: "debug",
+	}
+}
+
+// TestLoad_FailedLoadLeavesConfigUntouched pins that Load changes dst only
+// when the whole document loads: a document that fails to parse, fails
+// validation or still holds an unresolved secret leaves every field, flag
+// values included, as it was.
+func TestLoad_FailedLoadLeavesConfigUntouched(t *testing.T) {
+	for _, tt := range []struct{ name, doc string }{
+		{"syntax error", `{"subject":`},
+		{"not an object", `[]`},
+		{"type mismatch on the first field", `{"subject": 5}`},
+		{"type mismatch on a later field", `{"subject": "doc", "extra": 5}`},
+		{"unknown field", `{"subject": "doc", "bogus": 1}`},
+		{"trailing data", `{"subject": "doc"} {}`},
+		{"unresolved secret", `{"subject": "doc", "extra": "secret://x"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setDocEnv(t, writeDoc(t, t.TempDir(), tt.doc))
+			cfg, want := presetFlagBound(), presetFlagBound()
+			if err := config.Load(&cfg); err == nil {
+				t.Fatal("Load() error = nil, want an error")
+			}
+			if !reflect.DeepEqual(cfg, want) {
+				t.Errorf("after a failed Load:\n got %+v\nwant %+v (untouched)", cfg, want)
+			}
+		})
+	}
+}
+
+// badDefaultConfig has a default its field's type can't hold, so Load fails
+// after decoding, while it applies defaults.
+type badDefaultConfig struct {
+	Name  string `json:"name"`
+	Count int    `json:"count" schema:"default=notanint"`
+}
+
+func TestLoad_FailedDefaultLeavesConfigUntouched(t *testing.T) {
+	setDocEnv(t, writeDoc(t, t.TempDir(), `{"name": "doc"}`))
+	cfg := badDefaultConfig{Name: "from-flag", Count: 7}
+	if err := config.Load(&cfg); err == nil {
+		t.Fatal("Load() error = nil, want the bad default's error")
+	}
+	if want := (badDefaultConfig{Name: "from-flag", Count: 7}); cfg != want {
+		t.Errorf("after a failed Load: got %+v, want %+v (untouched)", cfg, want)
+	}
+}
+
+func TestLoad_NoDocumentLeavesConfigUntouched(t *testing.T) {
+	unsetDocEnv(t)
+	cfg, want := presetFlagBound(), presetFlagBound()
+	if err := config.Load(&cfg); !errors.Is(err, config.ErrNoDocument) {
+		t.Fatalf("Load() error = %v, want ErrNoDocument", err)
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("flag-only mode changed cfg:\n got %+v\nwant %+v", cfg, want)
+	}
+}
+
+type label string
+
+// keepGroup is a nested group with a field the document can't represent.
+type keepGroup struct {
+	Region string `json:"region" schema:"default=us-east-1"`
+	Local  string `json:"-"`
+}
+
+// everyShape has one field of each shape a config struct can hold, so the
+// reset can be checked shape by shape.
+type everyShape struct {
+	Str      string            `json:"str"`
+	Int      int               `json:"int"`
+	Bool     bool              `json:"bool"`
+	Float    float64           `json:"float"`
+	IntPtr   *int              `json:"int_ptr"`
+	StrPtrD  *string           `json:"str_ptr_d" schema:"default=dflt"`
+	Slice    []string          `json:"slice"`
+	Map      map[string]string `json:"map"`
+	Array    [2]int            `json:"array"`
+	Raw      json.RawMessage   `json:"raw"`
+	Dur      time.Duration     `json:"dur"`
+	At       time.Time         `json:"at"`
+	Named    label             `json:"named"`
+	Quoted   int               `json:"quoted,string"`
+	Omit     string            `json:"omit,omitempty"`
+	Untagged string
+	Group    keepGroup  `json:"group"`
+	GroupPtr *keepGroup `json:"group_ptr"`
+	Local    string     `json:"-"`
+	private  string
+}
+
+// TestLoad_ResetsEveryFieldShape loads an empty document into a struct whose
+// every field was preset the way bound flags preset it. Every field the
+// document can represent ends up at its default or its zero value; a field it
+// can't represent keeps its value, inside a nested struct value too. A
+// pointer group is reset whole, json:"-" fields under it included, because an
+// absent pointer group is nil (D-14).
+func TestLoad_ResetsEveryFieldShape(t *testing.T) {
+	setDocEnv(t, writeDoc(t, t.TempDir(), `{}`))
+	one, flag := 1, "from-flag"
+	cfg := everyShape{
+		Str: flag, Int: 1, Bool: true, Float: 1.5, IntPtr: &one, StrPtrD: &flag,
+		Slice: []string{flag}, Map: map[string]string{"k": flag}, Array: [2]int{1, 2},
+		Raw: json.RawMessage(`"from-flag"`), Dur: time.Second, At: time.Unix(1, 0),
+		Named: label(flag), Quoted: 1, Omit: flag, Untagged: flag,
+		Group:    keepGroup{Region: flag, Local: flag},
+		GroupPtr: &keepGroup{Region: flag, Local: flag},
+		Local:    flag, private: flag,
+	}
+	if err := config.Load(&cfg); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	dflt := "dflt"
+	want := everyShape{
+		StrPtrD: &dflt,
+		Group:   keepGroup{Region: "us-east-1", Local: flag},
+		Local:   flag, private: flag,
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("after Load of {}:\n got %+v\nwant %+v", cfg, want)
 	}
 }

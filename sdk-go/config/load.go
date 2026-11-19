@@ -21,6 +21,7 @@ package config
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +69,14 @@ func Path() (string, bool) {
 // Load reads the mounted config document (D-2) into dst, a pointer to a
 // struct, or returns ErrNoDocument if no document is mounted for this run.
 //
+// The document is authoritative for every field it can represent: Load first
+// resets each such field to its zero value, so a value a flag bound into dst
+// before Load ran doesn't survive for a field the document leaves out. Fields
+// the document can't represent (json:"-", unexported) keep their values,
+// except under a pointer, slice, array, map or self-decoding field, which is
+// reset whole (see resetDocumentFields). Load changes dst only if the whole
+// document loads: on any error it returns, dst is as it was.
+//
 // Unknown fields in the document are rejected (json.Decoder's
 // DisallowUnknownFields, D-2). For every field absent from the document, Load
 // applies the field's `schema:"default=..."` struct-tag value, if any (D-14);
@@ -104,9 +113,15 @@ func Load(dst any) error {
 		return fmt.Errorf("config: Load requires a non-nil pointer to struct, got %T", dst)
 	}
 
+	// Load into a copy and write it back only once the whole document has
+	// loaded, so a document that fails leaves dst as it was.
+	work := reflect.New(v.Elem().Type())
+	work.Elem().Set(v.Elem())
+	resetDocumentFields(work.Elem())
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+	if err := dec.Decode(work.Interface()); err != nil {
 		return fmt.Errorf("config: decode %s: %w", path, err)
 	}
 
@@ -119,11 +134,51 @@ func Load(dst any) error {
 		return fmt.Errorf("config: decode %s: %w", path, err)
 	}
 
-	if err := applyStruct(v.Elem(), present); err != nil {
+	if err := applyStruct(work.Elem(), present); err != nil {
+		return err
+	}
+	if err := scanForUnresolvedSecrets(work.Elem(), ""); err != nil {
 		return err
 	}
 
-	return scanForUnresolvedSecrets(v.Elem(), "")
+	v.Elem().Set(work.Elem())
+	return nil
+}
+
+// resetDocumentFields sets every field of the struct v that a config document
+// can represent back to its zero value (spec/config.md, loader precedence: a
+// present document is authoritative for every field it can represent).
+// Unexported and json:"-" fields keep their values, and so do the json:"-"
+// fields of a nested struct value, which is reset field by field. A pointer,
+// slice, array or map field, or a struct that decodes as one value
+// (json.Unmarshaler or encoding.TextUnmarshaler, such as time.Time), is reset
+// whole, json:"-" fields under it included: an absent pointer group is nil
+// (D-14).
+func resetDocumentFields(v reflect.Value) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported
+		}
+		if _, skip := spec.JSONFieldName(field); skip {
+			continue
+		}
+		fv := v.Field(i)
+		if field.Type.Kind() == reflect.Struct && !decodesAsValue(field.Type) {
+			resetDocumentFields(fv)
+			continue
+		}
+		fv.SetZero()
+	}
+}
+
+// decodesAsValue reports whether encoding/json decodes t as one value through
+// its own unmarshaler rather than field by field.
+func decodesAsValue(t reflect.Type) bool {
+	pt := reflect.PointerTo(t)
+	return pt.Implements(reflect.TypeFor[json.Unmarshaler]()) ||
+		pt.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
 }
 
 // applyStruct walks v's exported fields, applying schema defaults to fields
