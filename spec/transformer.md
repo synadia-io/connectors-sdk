@@ -98,10 +98,9 @@ Reserved keys never appear as wire headers.
 
 Suffix notices share the data stream's retention — they are bound into
 the same stream as the data subjects. (Kafka/Debezium use a separate
-dead-letter topic for independent retention; `.oversize` shipped
-in-stream before the transform stage existed, and consistency wins.)
-Operators sizing retention for audit of gaps must size the data
-stream's retention.
+dead-letter topic for independent retention; this contract keeps notices
+in-stream so one retention setting covers data and notices.) Operators
+sizing retention for audit of gaps must size the data stream's retention.
 
 ## Determinism
 

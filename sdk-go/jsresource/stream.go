@@ -44,9 +44,9 @@ const (
 	// before it, so a concurrent change to any field in that window is
 	// reverted, and a concurrent update can drop the subjects this one
 	// added. After each update, EnsureStream reads the stream back and
-	// checks its subjects again, for up to 3 rounds (maxUpdateAttempts). A
-	// round sends a second update, without AllowAtomicPublish, when the
-	// server rejects the first.
+	// checks its subjects again, for up to three rounds. A round sends a
+	// second update, without AllowAtomicPublish, when the server rejects
+	// the first.
 	UpdateAdditive
 )
 

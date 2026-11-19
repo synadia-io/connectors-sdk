@@ -114,7 +114,7 @@ spec/              connector contract: docs and JSON Schemas (Go module: schema 
 sdk-go/            Go SDK
 sdk-go/bloblang/   Bloblang transform backend (own module)
 conformance/       contract suite, its helpers, and the sdk-go fixture (testconn/)
-docs/              where design decisions go (docs/README.md)
+docs/              docs policy (docs/README.md); decisions live in spec/
 go.work            workspace over the Go modules
 ```
 

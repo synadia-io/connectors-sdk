@@ -12,8 +12,8 @@ subject (`admin.md`), the checkpoint bucket (`checkpoint.md`), and the
 default durable consumer name, `CONN-<instanceID>` — is a pure
 function of one identity, injected by the nexlet:
 
-- `NEX_WORKLOAD_CONNECTOR_ID` — the durable connector id, injected from
-  the start-request metadata key `connector_id`.
+- `NEX_WORKLOAD_CONNECTOR_ID` — the durable connector id the launcher
+  assigns.
 - `NEX_WORKLOAD_NAMESPACE` — the namespace the connector runs in.
 
 If `NEX_WORKLOAD_CONNECTOR_ID` is unset, a connector falls back, in
@@ -93,9 +93,8 @@ collection count query is a real cost on a large collection, and the
 count can change while backfill is in flight. `status.schema.json`
 enforces this structurally (`additionalProperties: false` on the
 `backfill` object), not just by convention: a `pct` or `percent` key
-under `backfill` fails schema validation outright (see
-`TestStatusSchema`'s `backfill_percentage_field_does_not_exist`
-subtest in `spec_test.go`).
+under `backfill` fails schema validation outright (see the
+backfill-percentage subtest of `TestStatusSchema` in `spec_test.go`).
 
 A connector reports whichever of `behind_ms` / `backfill` apply to its
 current phase — both, either, or neither (a connector that has

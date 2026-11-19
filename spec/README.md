@@ -3,6 +3,9 @@
 Contracts every connector honors, regardless of implementation
 language.
 
+The `D-n` labels are stable decision ids: the heading or sentence that
+carries one defines it, and other docs and code cite it.
+
 Current contents:
 
 - **[contract.md](contract.md)** — the umbrella: contract identifier
@@ -24,9 +27,9 @@ Current contents:
   (D-3), the status subject and publish cadence (D-5), the state model
   (D-6), and lag reporting with no percentage field (D-7). Example:
   `examples/status.parked.json`.
-- **[admin.md](admin.md)** — the ADR-32 `connector-admin` NATS micro
-  service: root subject, and the `status`/`resume`/`skip` endpoints
-  (D-8).
+- **[admin.md](admin.md)** — the `connector-admin` NATS micro service
+  (NATS ADR-32): root subject, and the `status`/`resume`/`skip`
+  endpoints (D-8).
 - **[lifecycle.md](lifecycle.md)** — park semantics (D-15), the reason
   strings the harness itself produces, and drain semantics (D-16).
 - **[checkpoint.md](checkpoint.md)** — checkpoint KV bucket naming and

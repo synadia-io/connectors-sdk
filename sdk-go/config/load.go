@@ -82,11 +82,12 @@ func Path() (string, bool) {
 // value still carries the whole-value "secret://" prefix (the entire value,
 // not a substring), Load returns an error identifying the field by its
 // dotted json-name path. `display:"secret"` (D-13 x-display.secret) marks
-// where a reference is expected; it does not scope the guard, because the nexlet's node-side resolver has
-// no access to config_schema/x-display at resolution time and must scan
-// every field the same way. The prefix is reserved document-wide: a literal
-// value that happens to start with "secret://" is prohibited, not passed
-// through — there is no escaping mechanism.
+// where a reference is expected; it does not scope the guard, because the
+// nexlet's node-side resolver has no access to config_schema/x-display at
+// resolution time and must scan every field the same way. The prefix is
+// reserved document-wide: a literal value that happens to start with
+// "secret://" is prohibited, not passed through — there is no escaping
+// mechanism.
 func Load(dst any) error {
 	path, ok := Path()
 	if !ok {

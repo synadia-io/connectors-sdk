@@ -64,8 +64,9 @@ func mapOne(exec *blobl.Executor, m transform.Message) transform.Result {
 // toService builds the input message: payload copied (the Func contract
 // forbids aliasing either way), headers as metadata (first value — benthos's
 // own NATS input collapses the same way), subject under the reserved key.
-// An empty payload binds `this = null` — delete tombstones are empty by the
-// MongoDB contract, and a mapping must be able to inspect and route them.
+// An empty payload binds `this = null` — a source may publish an empty
+// payload (a delete tombstone, say), and a mapping must be able to inspect
+// and route it.
 func toService(m transform.Message) *service.Message {
 	var in *service.Message
 	if len(m.Payload) == 0 {

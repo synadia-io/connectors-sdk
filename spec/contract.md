@@ -31,8 +31,9 @@ different flag surface:
 - `check` — validate the supplied config and probe the external system
   it names (connectivity, auth, permissions — whatever "is this
   reachable and usable" means for the connector). Prints
-  `{"ok": bool, "message": string, "latency_ms": int64}` to stdout.
-  Exit code is 0 iff `ok` is true: a probe failure MUST exit non-zero
+  `{"ok": bool, "message": string, "latency_ms": int64}` to stdout;
+  `message` may be omitted when it is empty. Exit code is 0 iff `ok` is
+  true: a probe failure MUST exit non-zero
   *and* still print that JSON body (`"ok": false` included) before
   exiting — the caller needs both signals, not one in place of the
   other. The contract violation is a **zero** exit paired with

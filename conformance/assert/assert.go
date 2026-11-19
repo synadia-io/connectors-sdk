@@ -12,8 +12,7 @@
 // limitations under the License.
 
 // Package assert provides reusable NATS assertions for conformance suites,
-// so scenarios express intent ("expect N messages on subject") once. Ported
-// from the connectors-onboard e2e harness (core/assert).
+// so scenarios express intent ("expect N messages on subject") once.
 package assert
 
 import (

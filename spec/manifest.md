@@ -99,6 +99,5 @@ actual behavior; both are optional and have no default.
 }
 ```
 
-The digest above is illustrative, not the real published mongodb image
-digest — `spec/` has no build step that could keep it current, and a
-stale-but-real-looking digest is worse than an obviously-synthetic one.
+The registry, digest and URLs above are placeholders; a real manifest
+carries the image's actual digest.

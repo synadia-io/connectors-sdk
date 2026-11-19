@@ -26,7 +26,7 @@
 //	func main() {
 //	    cfg := &Config{}
 //	    flag.Parse()
-//	    os.Exit(runtime.Main("mongodb", version, cfg, caps, runtime.Hooks{
+//	    os.Exit(runtime.Main("example", version, cfg, caps, runtime.Hooks{
 //	        Probe: probe,
 //	        Run:   run,
 //	    }))
@@ -101,13 +101,12 @@ type Hooks struct {
 	// Probe validates config and probes the external system for the D-11
 	// `check` mode. It is called after the config document is loaded, so it
 	// may read the config struct the connector handed to Main. Its ctx
-	// carries the check mode's deadline, 10s (checkTimeout) for the config
-	// load and the probe together, so a connector needs no timeout of its
-	// own. A probe that honors ctx returns the error ctx led to, and check
-	// prints that, URL credentials redacted. One that ignores ctx is cut
-	// off: check waits a moment past the deadline, prints its Result and
-	// exits without it. Probe must not write to stdout, which carries
-	// check's one Result line.
+	// carries the check mode's deadline, 10s for the config load and the
+	// probe together, so a connector needs no timeout of its own. A probe
+	// that honors ctx returns the error ctx led to, and check prints that,
+	// URL credentials redacted. One that ignores ctx is cut off: check waits
+	// a moment past the deadline, prints its Result and exits without it.
+	// Probe must not write to stdout, which carries check's one Result line.
 	Probe func(context.Context) error
 
 	// Run is the connector's main loop. It returns when the loop finishes

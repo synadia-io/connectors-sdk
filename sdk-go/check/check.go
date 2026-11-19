@@ -48,7 +48,7 @@ var probeGrace = time.Second
 // than crashing the process — probe is arbitrary connector code (typically
 // dialing an external system), and check's exactly-one-line contract must
 // hold even when it misbehaves. For the same reason, Run waits for probe only
-// until ctx ends plus a short grace (probeGrace). A probe that honors its ctx
+// until ctx ends plus a short grace (about a second). A probe that honors its ctx
 // returns within the grace, and its own error, which names the host and the
 // operation, is the one printed. A probe that ignores its ctx is reported as
 // not finished, and Run returns without it: check is a one-shot process, so

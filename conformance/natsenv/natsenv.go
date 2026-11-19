@@ -13,8 +13,7 @@
 
 // Package natsenv provides an embedded NATS server for the conformance and
 // scenario tiers: JetStream on, plus start/stop/restart so scenarios can
-// simulate a server outage and assert client reconnect. Ported from the
-// connectors-onboard e2e harness (core/natsenv), which prototyped it.
+// simulate a server outage and assert client reconnect.
 package natsenv
 
 import (
