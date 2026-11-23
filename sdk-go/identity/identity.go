@@ -69,29 +69,31 @@ type Identity struct {
 	InstanceID  string
 }
 
-// DetectIdentity resolves the runtime Identity (see Detect) and validates it
-// at the identity boundary before any subject or bucket is derived from it.
+// Detect resolves the runtime Identity from the environment (see Resolve for
+// the fallback chain) and validates every environment value that was
+// supplied, and the namespace and instance id that land in subjects, before
+// any subject or bucket is derived from it. It is the harness's entry point.
 // The validation rule is subject.ValidToken (spec/subjects.md).
 //
-// This is the harness's entry point, and where it validates: connector_id,
-// namespace, and workload_id all flow unescaped into NATS subjects
-// (StatusSubject, AdminRoot) via InstanceID, exactly the way CheckpointBucket
-// sanitizes for the KV bucket name — but a subject cannot be sanitized the
-// way a bucket name can. Replacing a `.` with `_` in a subject would silently
-// relocate a connector's control plane and collide two distinct ids onto one
-// subject; a `*` or `>` would subscribe the admin service to sibling
-// connectors' status/resume/skip across the namespace. So an id component
-// that is not a single clean NATS subject token is REJECTED here, loudly,
-// rather than sanitized: a malformed identity is a fatal misconfiguration,
-// caught before the admin and status surfaces exist (lifecycle.md D-15's
-// pre-admin fail-stop), not a value to be quietly rewritten.
+// connector_id, namespace, and workload_id all flow unescaped into NATS
+// subjects (StatusSubject, AdminRoot) via InstanceID, exactly the way
+// CheckpointBucket sanitizes for the KV bucket name — but a subject cannot be
+// sanitized the way a bucket name can. Replacing a `.` with `_` in a subject
+// would silently relocate a connector's control plane and collide two
+// distinct ids onto one subject; a `*` or `>` would subscribe the admin
+// service to sibling connectors' status/resume/skip across the namespace. So
+// an id component that is not a single clean NATS subject token is REJECTED
+// here, loudly, rather than sanitized: a malformed identity is a fatal
+// misconfiguration, caught before the admin and status surfaces exist
+// (lifecycle.md D-15's pre-admin fail-stop), not a value to be quietly
+// rewritten.
 //
 // An unset NEX_WORKLOAD_CONNECTOR_ID or NEX_WORKLOAD_ID is not an error — an
 // empty value is the documented D-3 fallback trigger, not an injected token.
 // Only a value that is present-but-malformed, and the resolved Namespace and
 // InstanceID that actually land in subjects, are validated.
-func DetectIdentity(fallbackName string) (Identity, error) {
-	id := Detect(fallbackName)
+func Detect(fallbackName string) (Identity, error) {
+	id := Resolve(fallbackName)
 
 	// Validate each env-var value that was actually supplied: a set
 	// connector_id/workload_id lands in the wire status document even when it
@@ -124,18 +126,21 @@ func DetectIdentity(fallbackName string) (Identity, error) {
 	return id, nil
 }
 
-// Detect resolves the runtime Identity from environment variables injected
-// by the nexlet (D-3), without validation — DetectIdentity is the validating
-// entry point the harness uses. InstanceID follows the D-3 fallback chain:
-// the connector id when NEX_WORKLOAD_CONNECTOR_ID is set, else the workload
-// id when the nexlet provides one, else fallbackName with "-dev" appended —
-// guaranteeing an InstanceID is always resolvable, including for a connector
-// run outside any launcher (e.g. a developer's laptop).
+// Resolve resolves the runtime Identity from the environment variables the
+// nexlet injects (D-3), without validating it: Detect is the validating entry
+// point the harness uses, and Resolve is for code that derives a subject or
+// a bucket name from the same environment in a test or a tool, where a
+// malformed value is the caller's to notice. InstanceID follows the D-3
+// fallback chain: the connector id when NEX_WORKLOAD_CONNECTOR_ID is set,
+// else the workload id when the nexlet provides one, else fallbackName with
+// "-dev" appended — guaranteeing an InstanceID is always resolvable,
+// including for a connector run outside any launcher (e.g. a developer's
+// laptop).
 //
 // Namespace defaults to "default" when NEX_WORKLOAD_NAMESPACE is unset
 // (spec/credentials.md) — an empty namespace would make StatusSubject and
 // AdminRoot produce a malformed NATS subject.
-func Detect(fallbackName string) Identity {
+func Resolve(fallbackName string) Identity {
 	id := Identity{
 		Namespace:   os.Getenv(envNamespace),
 		ConnectorID: os.Getenv(envConnectorID),

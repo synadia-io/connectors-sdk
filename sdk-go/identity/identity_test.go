@@ -41,13 +41,13 @@ func clearEnv(t *testing.T) {
 	}
 }
 
-func TestDetect_ConnectorIDWins(t *testing.T) {
+func TestResolve_ConnectorIDWins(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("NEX_WORKLOAD_CONNECTOR_ID", "conn-1")
 	t.Setenv("NEX_WORKLOAD_ID", "wl-1")
 	t.Setenv("NEX_WORKLOAD_NAMESPACE", "acme")
 
-	id := identity.Detect("fallback")
+	id := identity.Resolve("fallback")
 
 	if id.InstanceID != "conn-1" {
 		t.Errorf("InstanceID = %q, want %q", id.InstanceID, "conn-1")
@@ -63,11 +63,11 @@ func TestDetect_ConnectorIDWins(t *testing.T) {
 	}
 }
 
-func TestDetect_FallsBackToWorkloadID(t *testing.T) {
+func TestResolve_FallsBackToWorkloadID(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("NEX_WORKLOAD_ID", "wl-1")
 
-	id := identity.Detect("fallback")
+	id := identity.Resolve("fallback")
 
 	if id.InstanceID != "wl-1" {
 		t.Errorf("InstanceID = %q, want %q", id.InstanceID, "wl-1")
@@ -77,10 +77,10 @@ func TestDetect_FallsBackToWorkloadID(t *testing.T) {
 	}
 }
 
-func TestDetect_FallsBackToFallbackNamePlusDev(t *testing.T) {
+func TestResolve_FallsBackToFallbackNamePlusDev(t *testing.T) {
 	clearEnv(t)
 
-	id := identity.Detect("my-connector")
+	id := identity.Resolve("my-connector")
 
 	if id.InstanceID != "my-connector-dev" {
 		t.Errorf("InstanceID = %q, want %q", id.InstanceID, "my-connector-dev")
@@ -90,25 +90,25 @@ func TestDetect_FallsBackToFallbackNamePlusDev(t *testing.T) {
 	}
 }
 
-// TestDetect_NamespaceUnsetDefaultsToDefault covers the ruling recorded in
+// TestResolve_NamespaceUnsetDefaultsToDefault covers the ruling recorded in
 // spec/credentials.md: an unset NEX_WORKLOAD_NAMESPACE resolves to
 // "default", not the empty string — an empty namespace would make
 // StatusSubject/AdminRoot emit a malformed NATS subject ("$CONNECTOR..status.<id>").
-func TestDetect_NamespaceUnsetDefaultsToDefault(t *testing.T) {
+func TestResolve_NamespaceUnsetDefaultsToDefault(t *testing.T) {
 	clearEnv(t)
 
-	id := identity.Detect("fallback")
+	id := identity.Resolve("fallback")
 
 	if id.Namespace != "default" {
 		t.Errorf("Namespace = %q, want %q", id.Namespace, "default")
 	}
 }
 
-func TestDetect_NamespaceSetIsUsedVerbatim(t *testing.T) {
+func TestResolve_NamespaceSetIsUsedVerbatim(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("NEX_WORKLOAD_NAMESPACE", "acme")
 
-	id := identity.Detect("fallback")
+	id := identity.Resolve("fallback")
 
 	if id.Namespace != "acme" {
 		t.Errorf("Namespace = %q, want %q", id.Namespace, "acme")
@@ -160,7 +160,7 @@ func TestAdminRoot_ExactFormat(t *testing.T) {
 // dot-separated tokens ($CONNECTOR / namespace / status|admin / instance).
 // A namespace or instance id carrying a stray '.' would split into a fifth
 // token and land the connector's control plane on the wrong subject — the
-// exact corruption DetectIdentity now rejects at the boundary.
+// exact corruption Detect now rejects at the boundary.
 func TestSubjects_ExactlyFourTokens(t *testing.T) {
 	valid := []identity.Identity{
 		{Namespace: "default", InstanceID: "conn-1"},
@@ -179,33 +179,33 @@ func TestSubjects_ExactlyFourTokens(t *testing.T) {
 	}
 }
 
-// TestDetectIdentity_ValidPasses covers the accept path: clean env values
+// TestDetect_ValidPasses covers the accept path: clean env values
 // resolve without error and produce the expected InstanceID.
-func TestDetectIdentity_ValidPasses(t *testing.T) {
+func TestDetect_ValidPasses(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("NEX_WORKLOAD_CONNECTOR_ID", "conn-1")
 	t.Setenv("NEX_WORKLOAD_ID", "wl-1")
 	t.Setenv("NEX_WORKLOAD_NAMESPACE", "acme")
 
-	id, err := identity.DetectIdentity("fallback")
+	id, err := identity.Detect("fallback")
 	if err != nil {
-		t.Fatalf("DetectIdentity() error = %v, want nil for clean ids", err)
+		t.Fatalf("Detect() error = %v, want nil for clean ids", err)
 	}
 	if id.InstanceID != "conn-1" {
 		t.Errorf("InstanceID = %q, want %q", id.InstanceID, "conn-1")
 	}
 }
 
-// TestDetectIdentity_FallbackUnsetIDsAllowed guards the decision documented
-// on DetectIdentity: an unset connector_id/workload_id is the legitimate D-3
+// TestDetect_FallbackUnsetIDsAllowed guards the decision documented
+// on Detect: an unset connector_id/workload_id is the legitimate D-3
 // fallback, NOT an injection, so it must be accepted (the resolved
 // InstanceID is fallbackName+"-dev", itself a clean token).
-func TestDetectIdentity_FallbackUnsetIDsAllowed(t *testing.T) {
+func TestDetect_FallbackUnsetIDsAllowed(t *testing.T) {
 	clearEnv(t)
 
-	id, err := identity.DetectIdentity("my-connector")
+	id, err := identity.Detect("my-connector")
 	if err != nil {
-		t.Fatalf("DetectIdentity() error = %v, want nil when connector_id/workload_id are unset", err)
+		t.Fatalf("Detect() error = %v, want nil when connector_id/workload_id are unset", err)
 	}
 	if id.InstanceID != "my-connector-dev" {
 		t.Errorf("InstanceID = %q, want %q", id.InstanceID, "my-connector-dev")
@@ -215,13 +215,13 @@ func TestDetectIdentity_FallbackUnsetIDsAllowed(t *testing.T) {
 	}
 }
 
-// TestDetectIdentity_RejectsInjection is the admission table: a '.', ' ',
+// TestDetect_RejectsInjection is the admission table: a '.', ' ',
 // tab, '*', '>', an ASCII control character, or invalid UTF-8 in ANY of the
 // three identity env vars is rejected loudly,
 // regardless of which one wins the InstanceID fallback race — a bad
 // connector_id/workload_id still reaches the wire status document, and a bad
 // namespace/instance reaches a subject.
-func TestDetectIdentity_RejectsInjection(t *testing.T) {
+func TestDetect_RejectsInjection(t *testing.T) {
 	const (
 		connEnv = "NEX_WORKLOAD_CONNECTOR_ID"
 		wlEnv   = "NEX_WORKLOAD_ID"
@@ -253,35 +253,35 @@ func TestDetectIdentity_RejectsInjection(t *testing.T) {
 				t.Setenv(nsEnv, "acme")
 				t.Setenv(target, val)
 
-				if _, err := identity.DetectIdentity("fallback"); err == nil {
-					t.Errorf("DetectIdentity() error = nil, want rejection for %s=%q", target, val)
+				if _, err := identity.Detect("fallback"); err == nil {
+					t.Errorf("Detect() error = nil, want rejection for %s=%q", target, val)
 				}
 			})
 		}
 	}
 }
 
-// TestDetectIdentity_RejectsPoisonedFallbackName guards the InstanceID path
+// TestDetect_RejectsPoisonedFallbackName guards the InstanceID path
 // the env-var checks do not cover: when connector_id and workload_id are
 // both unset, InstanceID derives from fallbackName+"-dev", which must still
 // be a clean subject token. This covers a dot-separator, invalid UTF-8, and
 // a bare wildcard.
-func TestDetectIdentity_RejectsPoisonedFallbackName(t *testing.T) {
+func TestDetect_RejectsPoisonedFallbackName(t *testing.T) {
 	for _, name := range []string{"bad.name", "a\xffb", "*"} {
 		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
 			clearEnv(t)
-			if _, err := identity.DetectIdentity(name); err == nil {
-				t.Error("DetectIdentity() error = nil, want rejection for a fallback name that is not a clean token")
+			if _, err := identity.Detect(name); err == nil {
+				t.Error("Detect() error = nil, want rejection for a fallback name that is not a clean token")
 			}
 		})
 	}
 }
 
-// TestDetectIdentity_AcceptsNonASCII pins the other side of the shared token
+// TestDetect_AcceptsNonASCII pins the other side of the shared token
 // rule (spec/subjects.md): non-ASCII text, including non-ASCII spaces and C1
 // control characters, is a valid token. The server accepts it, and it
 // changes nothing about where a message goes.
-func TestDetectIdentity_AcceptsNonASCII(t *testing.T) {
+func TestDetect_AcceptsNonASCII(t *testing.T) {
 	const (
 		connEnv = "NEX_WORKLOAD_CONNECTOR_ID"
 		wlEnv   = "NEX_WORKLOAD_ID"
@@ -296,9 +296,9 @@ func TestDetectIdentity_AcceptsNonASCII(t *testing.T) {
 				t.Setenv(nsEnv, "acme")
 				t.Setenv(target, val)
 
-				id, err := identity.DetectIdentity("fallback")
+				id, err := identity.Detect("fallback")
 				if err != nil {
-					t.Fatalf("DetectIdentity() error = %v, want nil", err)
+					t.Fatalf("Detect() error = %v, want nil", err)
 				}
 				switch target {
 				case connEnv:
@@ -377,7 +377,7 @@ func TestDurableName_NeedsAStableID(t *testing.T) {
 			if tt.workloadID != "" {
 				t.Setenv("NEX_WORKLOAD_ID", tt.workloadID)
 			}
-			got, err := identity.DurableName(identity.Detect("inlet"))
+			got, err := identity.DurableName(identity.Resolve("inlet"))
 			if tt.want == "" {
 				if !errors.Is(err, identity.ErrNoConnectorID) {
 					t.Errorf("DurableName = %q, %v; want ErrNoConnectorID", got, err)

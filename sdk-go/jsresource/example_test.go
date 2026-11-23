@@ -50,7 +50,7 @@ func ExampleEnsureStream() {
 // MaxDeliver and refuses a durable that strips payloads.
 func ExampleEnsureConsumer() {
 	var js jetstream.JetStream // from jetstream.New
-	var id identity.Identity   // from identity.DetectIdentity
+	var id identity.Identity   // from identity.Detect
 	durable, err := identity.DurableName(id)
 	if err != nil {
 		log.Fatal(err)
