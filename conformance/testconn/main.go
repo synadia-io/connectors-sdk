@@ -16,7 +16,10 @@
 // surfaces (spec/contract.md, config.md, status.md, admin.md, lifecycle.md)
 // for conformance/contract_test.go, not to do real work: it subscribes to
 // one configured subject, publishes an incrementing counter for every
-// ordinary message, and parks on the literal body "poison".
+// ordinary message, parks on the literal body "poison", and on the body
+// "route:<subject>" publishes to <subject> if its routing guard
+// (transform.Guard over <configured subject>.out.>) allows it, else an
+// `.error` notice.
 package main
 
 import (
@@ -24,13 +27,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/synadia-io/connectors-sdk/sdk-go/runtime"
+	"github.com/synadia-io/connectors-sdk/sdk-go/subject"
+	"github.com/synadia-io/connectors-sdk/sdk-go/transform"
 )
 
 // version is the D-8 admin service version (must be valid SemVer).
@@ -119,12 +126,22 @@ const credsPoisonReason = "connect mongodb://dbuser:secretpw@db.internal:27017: 
 // drain-flush test needs the publish and the signal to race with no network
 // round trip involved in the trigger itself, which an externally-sent
 // SIGTERM (from the test process, after publishing over NATS to this one)
-// cannot guarantee: this hook makes the race deterministic instead.
+// cannot guarantee: this hook makes the race deterministic instead. A body
+// "route:<subject>" is the routing-guard probe, see route.
 func run(ctx context.Context, rt *runtime.Runtime, cfg *Config) error {
 	rtRef.Store(rt)
 
+	guard, err := transform.NewGuard(cfg.Subject + ".out.>")
+	if err != nil {
+		return fmt.Errorf("routing guard: %w", err)
+	}
+
 	park := make(chan string, 1)
 	sub, err := rt.Conn.Subscribe(cfg.Subject, func(m *nats.Msg) {
+		if target, ok := strings.CutPrefix(string(m.Data), "route:"); ok {
+			route(rt, cfg, guard, m, target)
+			return
+		}
 		switch string(m.Data) {
 		case "poison":
 			key := m.Header.Get("Key")
@@ -166,6 +183,48 @@ func run(ctx context.Context, rt *runtime.Runtime, cfg *Config) error {
 	case reason := <-park:
 		return runtime.Park(reason)
 	}
+}
+
+// route is the routing-guard probe (spec/transformer.md, "routing guard"):
+// it stands in for a transform whose output is the message
+// {Subject: target, Header: the probe's headers, Payload: "routed"}, and
+// does what every publish path of a connector does with a transform output.
+// When guard.Check allows the message, it is published as is. Otherwise the
+// connector publishes an `.error` notice on the PRE-transform subject
+// (cfg.Subject), with an empty payload and a Transform-Error header holding
+// a fixed, value-free class, since the guard's error text quotes the subject
+// or header name, which came from message data; the full text goes to the
+// log only. The status counter transform_errored counts the notices.
+func route(rt *runtime.Runtime, cfg *Config, guard *transform.Guard, in *nats.Msg, target string) {
+	var hdr nats.Header
+	if len(in.Header) > 0 {
+		hdr = nats.Header{}
+		for k, vs := range in.Header {
+			hdr[k] = append([]string(nil), vs...)
+		}
+	}
+	m := transform.Message{Subject: target, Header: hdr, Payload: []byte("routed")}
+	if err := guard.Check(m); err != nil {
+		class := "transform"
+		switch {
+		case errors.Is(err, transform.ErrUnpublishableSubject):
+			class = "unpublishable-subject"
+		case errors.Is(err, transform.ErrReservedHeader):
+			class = "reserved-header"
+		}
+		log.Printf("testconn: route: %v", err)
+		rt.Status.Add("transform_errored", 1)
+		notice := nats.NewMsg(cfg.Subject + "." + subject.SuffixError)
+		notice.Header.Set("Transform-Error", class)
+		_ = rt.Conn.PublishMsg(notice)
+		return
+	}
+	out := nats.NewMsg(m.Subject)
+	if m.Header != nil {
+		out.Header = m.Header
+	}
+	out.Data = m.Payload
+	_ = rt.Conn.PublishMsg(out)
 }
 
 // resume implements the Resume hook: no state to reset, just a counter so a

@@ -55,6 +55,7 @@ Run mode subscribes (core NATS) on `subject` and handles each message by its bod
 | `poison` | Park with reason `poison: <Key header>`, or `poison: unknown` when the message has no `Key` header. |
 | `poison-creds` | Park with reason `connect mongodb://dbuser:secretpw@db.internal:27017: connection refused`, unredacted. The suite asserts the harness redacts it. |
 | `flush-then-term` | Publish `flushed` to `<subject>.flushed`, then send SIGTERM to its own process. |
+| `route:<target>` | Run the routing guard (`spec/transformer.md`) over the message `{subject: <target>, headers: the probe's headers, payload: routed}` with `<subject>.out.>` as the only data-subject pattern. Allowed: publish that message to `<target>`. Refused: publish an empty-payload notice to `<subject>.error` whose `Transform-Error` header is `unpublishable-subject` (subject over the length limit, not a literal, in a reserved namespace, carrying a reserved notice suffix, or not under `<subject>.out.>`), `reserved-header` (a header name starting `Nats-` in any letter case) or `transform` (anything else), and add 1 to the status counter `transform_errored`. |
 | anything else | Add 1 to the status counter `received`, and publish the running message count, in decimal, to `<subject>.count`. |
 
 Admin hooks:
