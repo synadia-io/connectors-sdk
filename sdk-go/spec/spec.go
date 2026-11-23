@@ -14,8 +14,8 @@
 // Package spec builds a connector's spec document (contract.md D-12): the
 // contract identifier, a JSON Schema 2020-12 config_schema reflected from a
 // Go config struct's `json`, `schema`, and `display` struct tags, and the
-// capability list the caller supplies. See gen.go for the generator and the
-// tag grammar it understands.
+// capability list the caller supplies. FromStruct is the generator, and its
+// documentation gives the tag grammar it understands.
 package spec
 
 import "encoding/json"
