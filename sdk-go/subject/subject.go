@@ -15,8 +15,9 @@
 // shares (spec/subjects.md): what one subject token is, what a literal
 // subject and a pattern are, how long a subject a connector publishes to
 // may be, whether one pattern covers or overlaps another, which stream and
-// consumer names are valid, and which subjects carry notices
-// (spec/transformer.md). It has no NATS dependency.
+// consumer names are valid, which namespaces belong to the server
+// (Reserved), and which subjects carry notices (spec/transformer.md). It
+// has no NATS dependency.
 //
 // The rules are stricter than the server's in three ways (spec/subjects.md):
 // they reject what changes where a message goes (a '.' or a wildcard inside
@@ -160,6 +161,43 @@ func Overlap(a, b string) bool {
 		}
 	}
 	return len(x) == len(y)
+}
+
+// inboxPrefix is the first token of nats.go's default request inbox.
+const inboxPrefix = "_INBOX"
+
+// Reserved reports whether s is in a namespace that belongs to the server or
+// the platform, never to data (spec/subjects.md): its first '.'-separated
+// token starts with '$' (the JetStream API and advisories under $JS, system
+// events under $SYS, KV and object store internals under $KV and $O, this
+// contract's status and admin subjects under $CONNECTOR, and whatever else
+// is claimed the same way) or is "_INBOX", the default request inbox
+// prefix. A connector never publishes data to such a subject, and a
+// transform may not route to one. A custom inbox prefix is not recognised;
+// a connector's data-subject patterns (transform.Guard) keep it out of reach.
+//
+// Only the first token is looked at, so Reserved works on literals and
+// patterns alike ("$JS.>" and "$JS.API.STREAM.PURGE.X" are both reserved)
+// and says nothing about validity: it is false for "" and for any other
+// string whose first token is unreserved, valid or not.
+func Reserved(s string) bool {
+	first, _, _ := strings.Cut(s, ".")
+	return strings.HasPrefix(first, "$") || first == inboxPrefix
+}
+
+// IsNotice reports whether s carries a reserved notice suffix
+// (spec/transformer.md): its last '.'-separated token is SuffixError or
+// SuffixOversize. Those terminal tokens on a data subject are reserved for
+// the notices a connector publishes about that subject, so a transform may
+// not route a message to one; the connector's own notices are published
+// outside the transform. A single-token "error" or "oversize" counts: its
+// last token is the suffix. IsNotice says nothing about validity.
+func IsNotice(s string) bool {
+	last := s
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		last = s[i+1:]
+	}
+	return last == SuffixError || last == SuffixOversize
 }
 
 // maxNameLen is nats-server's JSMaxNameLen, the longest stream or consumer

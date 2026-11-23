@@ -137,8 +137,12 @@ func truncate(s string, n int) string {
 // (symmetric with binding); nats_subject -> the output subject, or
 // origSubject when the mapping doesn't set nats_subject or deletes it, and
 // whichever comes out must be a literal subject (subject.ValidLiteral) of
-// at most subject.MaxSubjectLen bytes; other metadata -> headers with
-// reserved keys stripped, non-strings JSON-encoded, names validated.
+// at most subject.MaxSubjectLen bytes; a subject the mapping rewrote (one
+// that differs from origSubject) must also be outside the server's
+// namespaces (subject.Reserved) and carry no notice suffix
+// (subject.IsNotice); other metadata -> headers with reserved keys
+// stripped, non-strings JSON-encoded, names validated and the server's own
+// Nats-* names refused (transform.ReservedHeader).
 // nats.go refuses to publish to an empty or whitespace subject
 // (ErrBadSubject) and a message with an invalid header name
 // (ErrBadHeaderMsg); rejecting them here makes the failure this message's
@@ -146,6 +150,11 @@ func truncate(s string, n int) string {
 // and the server answers it by closing the connection, which fails every
 // message in flight on it and, since nats.go doesn't reconnect after that
 // error, the connection itself.
+//
+// The connector's transform.Guard checks every output again before it is
+// published; this backend's own checks are defence in depth for the rules a
+// mapping alone can break, so the failure is this backend's per-message
+// error even in a connector that forgets the guard.
 func fromService(out *service.Message, origSubject string) (transform.Message, error) {
 	var payload []byte
 	if v, err := out.AsStructured(); err == nil && v == nil {
@@ -177,6 +186,15 @@ func fromService(out *service.Message, origSubject string) (transform.Message, e
 			werr = fmt.Errorf("header name %q: %s", k, headerNameProblem(k))
 			return werr
 		}
+		// The server acts on a Nats-* header (Nats-Msg-Id dedups, Nats-Rollup
+		// purges, Nats-Expected-* gates the publish), so a mapping may not set
+		// one; the connector adds its own after the transform. Like a bad name,
+		// this wins over a subject error whatever the map order.
+		if transform.ReservedHeader(k) {
+			werr = fmt.Errorf("%w: header name %q is reserved for the NATS server",
+				transform.ErrReservedHeader, k)
+			return werr
+		}
 		s, ok := v.(string)
 		if !ok {
 			b, jerr := json.Marshal(v)
@@ -202,6 +220,30 @@ func fromService(out *service.Message, origSubject string) (transform.Message, e
 	if !subject.ValidLiteral(subj) {
 		return transform.Message{}, fmt.Errorf("%w: %s %q: %s",
 			transform.ErrUnpublishableSubject, metaSubject, subj, subjectProblem(subj))
+	}
+	// Only a subject the mapping rewrote is held to the routing rules here. An
+	// inherited subject is the connector's own business: a sink consuming
+	// `$JS.EVENT.>` advisories or another connector's `.error` notices must
+	// still be able to transform them. A rewritten one is mapping output, and
+	// mapping output must be a data subject: never the server's (the
+	// JetStream API, an inbox) and never a notice, which the connector alone
+	// publishes (spec/transformer.md: notices are unforgeable). Rewritten
+	// means the output subject differs from the input's: the input's
+	// nats_subject metadata is carried through to the output whether or not
+	// the mapping touched it, so the walk can't tell an untouched key from
+	// one set to the same value, and a mapping that sets the subject to the
+	// one it inherited changes nothing.
+	if subj != origSubject {
+		if subject.Reserved(subj) {
+			return transform.Message{}, fmt.Errorf(
+				"%w: %s %q: a message subject can't be in a server-reserved namespace",
+				transform.ErrUnpublishableSubject, metaSubject, subj)
+		}
+		if subject.IsNotice(subj) {
+			return transform.Message{}, fmt.Errorf(
+				"%w: %s %q: a message subject can't carry a reserved notice suffix",
+				transform.ErrUnpublishableSubject, metaSubject, subj)
+		}
 	}
 	return transform.Message{Subject: subj, Header: hdr, Payload: payload}, nil
 }

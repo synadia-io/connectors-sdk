@@ -183,6 +183,59 @@ func TestValidNames(t *testing.T) {
 	}
 }
 
+func TestReserved(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"$JS.API.STREAM.PURGE.X", true},
+		{"$JS.>", true},
+		{"$SYS.x", true},
+		{"$KV.x", true},
+		{"$O.x", true},
+		{"$", true},
+		{"_INBOX.abc", true},
+		{"_INBOX", true},
+		{"_INBOX.*", true},
+		{"_INBOXX.a", false},
+		{"_inbox.a", false},
+		{"events._INBOX", false},
+		{"events.$JS.x", false},
+		{"events.a", false},
+		{"", false},
+		{".$JS", false},
+	}
+	for _, tt := range tests {
+		if got := subject.Reserved(tt.in); got != tt.want {
+			t.Errorf("Reserved(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIsNotice(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"events.error", true},
+		{"events.a.oversize", true},
+		{"events.*.error", true},
+		{"error", true},
+		{"oversize", true},
+		{"events.errors", false},
+		{"events.error.a", false},
+		{"events.Error", false},
+		{"events.a", false},
+		{"", false},
+		{"events.", false},
+	}
+	for _, tt := range tests {
+		if got := subject.IsNotice(tt.in); got != tt.want {
+			t.Errorf("IsNotice(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestNoticeSubjects(t *testing.T) {
 	both := []string{subject.SuffixOversize, subject.SuffixError}
 	tests := []struct {

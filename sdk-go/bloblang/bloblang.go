@@ -33,9 +33,21 @@
 // subject, and any other `meta` key to set a header; a header value that is
 // not a string is JSON-encoded. The key `nats_reply_subject` is reserved and
 // stripped. The output subject must be a literal subject within the length
-// limit, and header names must be ones NATS can send; otherwise the message
-// fails with a per-message error, and a subject error wraps
-// transform.ErrUnpublishableSubject.
+// limit, and a subject the mapping rewrote (one that differs from the input
+// subject) must also be outside the server's namespaces (subject.Reserved:
+// a first token starting with `$`, or `_INBOX`) and free of a reserved
+// notice suffix (subject.IsNotice: a last token `error` or `oversize`); an
+// inherited subject is only held to the first two rules, so a connector that
+// consumes advisories or notices can still transform them. Header names
+// must be ones NATS can send and must not start with `Nats-` in any letter
+// case: that prefix is the server's control headers, and a client that
+// canonicalises header names turns `nats-rollup` into the live one.
+// Otherwise the message fails with a per-message error: a subject error
+// wraps transform.ErrUnpublishableSubject and a reserved header's wraps
+// transform.ErrReservedHeader. These checks are defence in depth; the
+// connector's transform.Guard is the routing guard spec/transformer.md
+// names, and it checks every output again, including that the subject is
+// one of the connector's data subjects.
 //
 // The environment is pure and deterministic: a mapping sees only its
 // message. The impure functions (env, file, hostname, counter and the like)

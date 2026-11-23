@@ -364,3 +364,98 @@ func TestUntouchedHeadersPropagate(t *testing.T) {
 		t.Fatalf("headers must flow through untouched mappings: %+v", r.Output[0].Header)
 	}
 }
+
+// TestSubjectRewriteReservedErrors: a subject the mapping wrote may be
+// neither the server's (the JetStream API, system events, an inbox) nor a
+// notice, which only the connector publishes.
+func TestSubjectRewriteReservedErrors(t *testing.T) {
+	for _, tt := range []struct{ subject, problem string }{
+		{"$JS.API.STREAM.PURGE.ORDERS", "server-reserved namespace"},
+		{"$SYS.REQ.SERVER.PING", "server-reserved namespace"},
+		{"_INBOX.abc", "server-reserved namespace"},
+		{"x.error", "reserved notice suffix"},
+		{"a.b.oversize", "reserved notice suffix"},
+		{"error", "reserved notice suffix"},
+	} {
+		r := run1(t, "root = this\nmeta nats_subject = "+strconv.Quote(tt.subject), msg("a.b", `{}`, nil))
+		if r.Err == nil {
+			t.Errorf("nats_subject %q: got %+v, want a per-message error", tt.subject, r.Output)
+			continue
+		}
+		if !errors.Is(r.Err, transform.ErrUnpublishableSubject) {
+			t.Errorf("error = %q, want it to wrap transform.ErrUnpublishableSubject", r.Err)
+		}
+		if want := "nats_subject " + strconv.Quote(tt.subject); !strings.Contains(r.Err.Error(), want) {
+			t.Errorf("error = %q, want it to name the subject (%s)", r.Err, want)
+		}
+		if !strings.Contains(r.Err.Error(), tt.problem) {
+			t.Errorf("error = %q, want it to say why (%s)", r.Err, tt.problem)
+		}
+	}
+}
+
+// TestInheritedReservedSubjectPassesThrough: the reserved-namespace and
+// notice-suffix rules apply to a subject the mapping rewrote, not to one it
+// inherited: a connector consuming advisories or notices transforms them
+// on their own subjects, and whether it may publish there is its guard's
+// decision, not the mapping's. Setting nats_subject to the inherited value
+// is not a rewrite.
+func TestInheritedReservedSubjectPassesThrough(t *testing.T) {
+	for _, in := range []string{"$JS.EVENT.ADVISORY.x", "_INBOX.abc", "events.error", "events.a.oversize"} {
+		for _, mapping := range []string{
+			"root = this",
+			"root = this\nmeta nats_subject = deleted()",
+			"root = this\nmeta nats_subject = @nats_subject",
+			"root = this\nmeta nats_subject = " + strconv.Quote(in),
+		} {
+			r := run1(t, mapping, msg(in, `{}`, nil))
+			if r.Err != nil || len(r.Output) != 1 || r.Output[0].Subject != in {
+				t.Errorf("mapping %q on subject %q: got %+v, want it passed through", mapping, in, r)
+			}
+		}
+	}
+}
+
+// TestReservedHeaderNameErrors: a Nats-* header, in any letter case, is the
+// server's to act on, so a mapping that sets one fails that message with an
+// error wrapping transform.ErrReservedHeader.
+func TestReservedHeaderNameErrors(t *testing.T) {
+	for _, name := range []string{"Nats-Rollup", "nats-msg-id", "NATS-TTL", "Nats-Expected-Last-Sequence"} {
+		r := run1(t, "root = this\nmeta "+strconv.Quote(name)+" = \"all\"", msg("a.b", `{}`, nil))
+		if r.Err == nil {
+			t.Errorf("header %q: got %+v, want a per-message error", name, r.Output)
+			continue
+		}
+		if !errors.Is(r.Err, transform.ErrReservedHeader) {
+			t.Errorf("header %q: error = %q, want it to wrap transform.ErrReservedHeader", name, r.Err)
+		}
+		if !strings.Contains(r.Err.Error(), strconv.Quote(name)) {
+			t.Errorf("header %q: error = %q, want it to name the header", name, r.Err)
+		}
+	}
+}
+
+// TestNatsLikeHeaderNamesPass: only the exact "Nats-" prefix is reserved.
+func TestNatsLikeHeaderNamesPass(t *testing.T) {
+	for _, name := range []string{"X-Nats", "X-Nats-Thing", "Natsy", "Nats"} {
+		r := run1(t, "root = this\nmeta "+strconv.Quote(name)+" = \"1\"", msg("a.b", `{}`, nil))
+		if r.Err != nil || r.Output[0].Header.Get(name) != "1" {
+			t.Errorf("header %q: got %+v, want it set", name, r)
+		}
+	}
+}
+
+// TestReservedHeaderWinsOverBadSubject: with both wrong, the header error is
+// reported, whatever order the metadata is walked in.
+func TestReservedHeaderWinsOverBadSubject(t *testing.T) {
+	f := compile(t, "root = this\nmeta nats_subject = \"$JS.API.x\"\nmeta \"Nats-Rollup\" = \"all\"")
+	for range 50 {
+		res, err := f(context.Background(), []transform.Message{msg("a.b", `{}`, nil)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e := res[0].Err; !errors.Is(e, transform.ErrReservedHeader) {
+			t.Fatalf("error = %v, want the reserved-header error", e)
+		}
+	}
+}
