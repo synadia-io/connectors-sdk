@@ -80,6 +80,14 @@ func TestRunHarness_UnresolvedSecret_ResumeRetriesTheLoad(t *testing.T) {
 			<-ctx.Done()
 			return nil
 		},
+		// Run has never been entered when this park is resumed; the hook
+		// still gets a usable Runtime.
+		Resume: func(_ context.Context, rt *runtime.Runtime) error {
+			if rt == nil || rt.Status == nil || rt.Conn == nil {
+				t.Errorf("Resume before Run: rt = %+v, want a Runtime with Status and Conn", rt)
+			}
+			return nil
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

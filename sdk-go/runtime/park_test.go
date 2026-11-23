@@ -36,15 +36,28 @@ func TestRunHarness_Park_ResumeReentersRunLoop(t *testing.T) {
 	obs, sub := startHarnessEnv(t)
 
 	var runs, resumes atomic.Int32
+	var runRT atomic.Pointer[runtime.Runtime]
 	h := runtime.Hooks{
 		Run: func(ctx context.Context, rt *runtime.Runtime) error {
+			runRT.Store(rt)
 			if runs.Add(1) == 1 {
 				return runtime.Park("poison")
 			}
 			<-ctx.Done()
 			return nil
 		},
-		Resume: func() error { resumes.Add(1); return nil },
+		Resume: func(ctx context.Context, rt *runtime.Runtime) error {
+			// The hook gets the Runtime Run got, and a ctx with the admin
+			// request's deadline.
+			if rt == nil || rt != runRT.Load() {
+				t.Errorf("Resume rt = %p, want Run's %p", rt, runRT.Load())
+			}
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("Resume ctx has no deadline")
+			}
+			resumes.Add(1)
+			return nil
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -143,7 +156,7 @@ func TestRunHarness_Resume_WhileRunningIsAnError(t *testing.T) {
 			<-ctx.Done()
 			return nil
 		},
-		Resume: func() error { resumes.Add(1); return nil },
+		Resume: func(context.Context, *runtime.Runtime) error { resumes.Add(1); return nil },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -184,7 +197,7 @@ func TestRunHarness_Skip_ForwardsKeyAndResumes(t *testing.T) {
 			<-ctx.Done()
 			return nil
 		},
-		Skip: func(key string) error { skipped.Store(key); return nil },
+		Skip: func(_ context.Context, _ *runtime.Runtime, key string) error { skipped.Store(key); return nil },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,7 +328,7 @@ func TestRunHarness_Resume_HookErrorStaysParked(t *testing.T) {
 			<-ctx.Done()
 			return nil
 		},
-		Resume: func() error {
+		Resume: func(context.Context, *runtime.Runtime) error {
 			if attempts.Add(1) == 1 {
 				return errors.New("not ready yet")
 			}

@@ -14,6 +14,7 @@
 package admin_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -79,6 +80,7 @@ type fakeController struct {
 	skipErr   error
 
 	lastSkipKey string
+	sawDeadline bool
 }
 
 func (f *fakeController) Status() status.Document {
@@ -87,17 +89,32 @@ func (f *fakeController) Status() status.Document {
 	return f.statusDoc
 }
 
-func (f *fakeController) Resume() error {
+func (f *fakeController) Resume(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sawDeadline = f.sawDeadline || hasDeadline(ctx)
 	return f.resumeErr
 }
 
-func (f *fakeController) Skip(key string) error {
+func (f *fakeController) Skip(ctx context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sawDeadline = f.sawDeadline || hasDeadline(ctx)
 	f.lastSkipKey = key
 	return f.skipErr
+}
+
+// SawDeadline reports whether every Resume or Skip call so far carried a ctx
+// with a deadline, the contract Controller's godoc states.
+func (f *fakeController) SawDeadline() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sawDeadline
+}
+
+func hasDeadline(ctx context.Context) bool {
+	_, ok := ctx.Deadline()
+	return ok
 }
 
 func (f *fakeController) LastSkipKey() string {
@@ -125,14 +142,14 @@ func (p *panicController) Status() status.Document {
 	return p.statusDoc
 }
 
-func (p *panicController) Resume() error {
+func (p *panicController) Resume(context.Context) error {
 	if p.resumePanic {
 		panic("resume boom")
 	}
 	return nil
 }
 
-func (p *panicController) Skip(string) error {
+func (p *panicController) Skip(context.Context, string) error {
 	if p.skipPanic {
 		panic("skip boom")
 	}
@@ -319,6 +336,9 @@ func TestStart_ResumeEndpoint_Success(t *testing.T) {
 	}
 	if errHeader := msg.Header.Get(micro.ErrorHeader); errHeader != "" {
 		t.Fatalf("unexpected error response: %s", errHeader)
+	}
+	if !fc.SawDeadline() {
+		t.Error("Resume ctx carried no deadline; Controller promises the request's")
 	}
 }
 

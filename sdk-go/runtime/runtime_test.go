@@ -104,6 +104,36 @@ func TestRunHarness_SpecMode_NilConfigDescribesAnEmptyObject(t *testing.T) {
 	compileInlineSchema(t, "spec-mode-empty-schema.json", schemaDoc)
 }
 
+// TestRunHarness_AcceptsOptions guards Main's variadic Option tail: the
+// harness runs the same with no option and with one that changes nothing, so
+// the call every existing connector makes stays valid when the first real
+// Option lands.
+func TestRunHarness_AcceptsOptions(t *testing.T) {
+	t.Setenv(envServers, unreachableNATS)
+
+	for _, tt := range []struct {
+		name string
+		opts []runtime.Option
+	}{
+		{name: "zero options", opts: nil},
+		{name: "one no-op option", opts: []runtime.Option{runtime.NoOption}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var code int
+			out := captureStdout(t, func() {
+				code = runtime.RunHarness(context.Background(), []string{"spec"},
+					"test-connector", "1.0.0", testConfig{}, testCaps, runtime.Hooks{}, tt.opts...)
+			})
+			if code != 0 {
+				t.Fatalf("RunHarness([spec], %d options) = %d, want 0; stdout = %q", len(tt.opts), code, out)
+			}
+			if got := decodeJSONObject(t, []byte(out))["contract"]; got != spec.Contract {
+				t.Errorf("spec contract = %v, want %q", got, spec.Contract)
+			}
+		})
+	}
+}
+
 // TestRunHarness_CheckMode_FailingProbe guards D-11's `check` mode contract:
 // exactly one Result line on stdout and exit 1 when the probe fails —
 // signaling failure only in the body while exiting 0 is a contract violation.
