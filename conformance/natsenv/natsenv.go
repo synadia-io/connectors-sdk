@@ -36,10 +36,27 @@ type Server struct {
 	storeDir string
 }
 
+// Option adjusts the server options Start builds, after the defaults
+// (JetStream on, the store dir, the port) are set and before the server runs.
+// Restart keeps every option, since it reuses the same server options.
+type Option func(*server.Options)
+
+// WithUsers restricts the server to the given users (server.Options.Users):
+// a client then authenticates as one of them, as nats://user:pass@host or
+// nats.UserInfo, and gets that user's Permissions. A user with nil
+// Permissions may publish and subscribe anywhere, so a test can run a
+// connector under exactly the claim set spec/credentials.md lists while its
+// own observer connects unrestricted. Without this option the server accepts
+// any client, with full permissions.
+func WithUsers(users ...*server.User) Option {
+	return func(o *server.Options) { o.Users = users }
+}
+
 // Start launches an embedded NATS server with JetStream enabled. Pass port <= 0
 // to bind a random free port (recommended for hermetic tests); the concrete port
-// is captured so Restart reuses the same address.
-func Start(port int) (*Server, error) {
+// is captured so Restart reuses the same address. options apply on top of the
+// defaults, in order.
+func Start(port int, options ...Option) (*Server, error) {
 	storeDir, err := os.MkdirTemp("", "connectors-e2e-js-")
 	if err != nil {
 		return nil, fmt.Errorf("create jetstream store dir: %w", err)
@@ -53,6 +70,9 @@ func Start(port int) (*Server, error) {
 	}
 	opts.JetStream = true
 	opts.StoreDir = storeDir
+	for _, opt := range options {
+		opt(&opts)
+	}
 
 	s := &Server{opts: opts, storeDir: storeDir}
 	if err := s.run(); err != nil {

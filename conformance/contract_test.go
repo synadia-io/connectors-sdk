@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
 	"github.com/synadia-io/connectors-sdk/conformance/assert"
@@ -1099,6 +1100,252 @@ func TestCrashAndRestart(t *testing.T) {
 
 	p2.StopGraceful(t)
 }
+
+// TestClaimSetIsEnough runs the fixture under a credential that holds
+// exactly the subjects spec/credentials.md's "Requested claim set" (D-10)
+// lists for a core-NATS connector, and nothing else: publish to its data
+// and notice subjects and the status subject; subscribe to its data
+// subject, the admin root, the nine $SRV discovery subjects and _INBOX.>;
+// and the response permission, with the server's allow_responses defaults.
+// It then drives every surface the rest of this suite drives (status,
+// discovery, admin status, data in and out, the routing guard's notice,
+// park, resume and skip) and asserts the fixture's output records no
+// permissions violation. The point is the negative: an SDK change that
+// starts publishing or subscribing anywhere the table does not list fails
+// here, and the table has to grow with it. The checkpoint bucket and
+// JetStream rows have their own tests (sdk-go/checkpoint and
+// sdk-go/jsresource, TestClaimSetIsEnough).
+//
+// The server sends a permissions violation to the offending client as an
+// async error, which nats.go's default handler prints to stderr; the harness
+// sets no handler of its own, and micro wraps the connection's handler and
+// forwards to it, so the driver's captured output carries it. Two controls
+// keep the negative honest: a publish outside the allow list from a plain
+// connection as the same user must draw a violation (the server enforces the
+// permissions), and a second fixture under a user missing one row, the status
+// publish, must print one (the output channel carries them). A harness that
+// swallowed its async errors, or a server that ignored its users, could not
+// pass vacuously.
+func TestClaimSetIsEnough(t *testing.T) {
+	bin := testconnBin(t)
+
+	const (
+		namespace  = "default"
+		instanceID = "testconn-claims"
+		subject    = "conf.testconn.claims"
+	)
+	root := driver.AdminRoot(namespace, instanceID)
+	conn := &server.User{Username: "conn", Password: "conn", Permissions: &server.Permissions{
+		Publish: &server.SubjectPermission{Allow: []string{
+			// The data subjects a source publishes to, and its notice
+			// subjects (transformer.md). testconn publishes its counter to
+			// <subject>.count and routed messages to <subject>.out.>.
+			subject + ".count",
+			subject + ".out.>",
+			subject + ".error",
+			driver.StatusSubject(namespace, instanceID),
+		}},
+		Subscribe: &server.SubjectPermission{Allow: []string{
+			subject, // the data subject a sink subscribes to
+			root + ".>",
+			"$SRV.PING", "$SRV.PING.connector-admin", "$SRV.PING.connector-admin.*",
+			"$SRV.INFO", "$SRV.INFO.connector-admin", "$SRV.INFO.connector-admin.*",
+			"$SRV.STATS", "$SRV.STATS.connector-admin", "$SRV.STATS.connector-admin.*",
+			"_INBOX.>",
+		}},
+		// allow_responses with the server's defaults (server/const.go:
+		// DEFAULT_ALLOW_RESPONSE_MAX_MSGS, DEFAULT_ALLOW_RESPONSE_EXPIRATION).
+		Response: &server.ResponsePermission{MaxMsgs: 1, Expires: 2 * time.Minute},
+	}}
+	// nil Permissions: the observer is unrestricted.
+	observer := &server.User{Username: "observer", Password: "observer"}
+	// short lacks one row, the status publish; the second control below runs
+	// the fixture as short and expects the violation to show in its output.
+	short := &server.User{Username: "short", Password: "short", Permissions: &server.Permissions{
+		Publish:   &server.SubjectPermission{Allow: []string{subject + ".count"}},
+		Subscribe: conn.Permissions.Subscribe,
+		Response:  conn.Permissions.Response,
+	}}
+
+	srv, err := natsenv.Start(0, natsenv.WithUsers(conn, observer, short))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := srv.Connect(nats.UserInfo("observer", "observer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+
+	// The control: the conn user's permissions bite. A publish outside the
+	// allow list from a connection authenticated as conn draws a violation.
+	violations := make(chan error, 1)
+	control, err := srv.Connect(nats.UserInfo("conn", "conn"), nats.ErrorHandler(
+		func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			select {
+			case violations <- err:
+			default:
+			}
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(control.Close)
+	if err := control.Publish("conf.not.granted", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-violations:
+		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation") {
+			t.Fatalf("control publish: got %v, want a permissions violation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("control publish outside the allow list drew no permissions violation: " +
+			"the user's permissions are not enforced, so the test would prove nothing")
+	}
+
+	watch := driver.WatchStatus(t, nc, namespace, instanceID)
+	counts, err := assert.Collect(nc, subject+".count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(counts.Close)
+	routed, err := assert.Collect(nc, subject+".out.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(routed.Close)
+	notices, err := assert.Collect(nc, subject+".error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(notices.Close)
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixture connects as conn: nats.Connect takes the userinfo from
+	// the URL the launch contract hands it.
+	url := fmt.Sprintf("nats://conn:conn@127.0.0.1:%d", srv.Port)
+	p := driver.Spawn(t, bin, url, driver.Identity{ConnectorID: instanceID}.Env(), "-subject="+subject)
+
+	// Status publish, then the data subscription.
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool { return d.State == "running" })
+	awaitSubscribed(t, srv, subject)
+
+	// Discovery (the $SRV subscriptions) answered through the response
+	// permission.
+	for _, verb := range []string{"PING", "INFO", "STATS"} {
+		reply, err := nc.Request("$SRV."+verb+".connector-admin", nil, 5*time.Second)
+		if err != nil {
+			t.Fatalf("$SRV.%s.connector-admin: %v", verb, err)
+		}
+		var svc struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(reply.Data, &svc); err != nil || svc.Name != "connector-admin" {
+			t.Fatalf("$SRV.%s.connector-admin reply = %s (%v), want the connector-admin service",
+				verb, reply.Data, err)
+		}
+	}
+
+	// The admin subscription, answered through the response permission.
+	reply := driver.AdminRequest(t, nc, root, "status", nil, 5*time.Second)
+	if desc, isErr := driver.AdminErr(reply); isErr {
+		t.Fatalf("admin status failed: %s", desc)
+	}
+
+	// Data in on the subscription, data out on the counter subject.
+	if err := nc.Publish(subject, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := counts.WaitForAtLeast(1, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// The routing guard's two publish paths: a routed message on a data
+	// subject, and a notice on <subject>.error.
+	for _, target := range []string{subject + ".out.a", "conf.other.subject"} {
+		if err := nc.Publish(subject, []byte("route:"+target)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := routed.WaitForAtLeast(1, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notices.WaitForAtLeast(1, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Park, resume over admin, and the loop is alive again.
+	poison := nats.NewMsg(subject)
+	poison.Data = []byte("poison")
+	poison.Header.Set("Key", "claims-1")
+	if err := nc.PublishMsg(poison); err != nil {
+		t.Fatal(err)
+	}
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool { return d.State == "parked" })
+	awaitUnsubscribed(t, srv, subject)
+	reply = driver.AdminRequest(t, nc, root, "resume", nil, 5*time.Second)
+	if desc, isErr := driver.AdminErr(reply); isErr {
+		t.Fatalf("resume failed: %s", desc)
+	}
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool { return d.State == "running" })
+	awaitSubscribed(t, srv, subject)
+	if err := nc.Publish(subject, []byte("hello-again")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := counts.WaitForAtLeast(2, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Park again, skip over admin.
+	poison.Header.Set("Key", "claims-2")
+	if err := nc.PublishMsg(poison); err != nil {
+		t.Fatal(err)
+	}
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool {
+		return d.State == "parked" && strings.Contains(d.Reason, "claims-2")
+	})
+	awaitUnsubscribed(t, srv, subject)
+	skipBody, err := json.Marshal(map[string]string{"key": "claims-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply = driver.AdminRequest(t, nc, root, "skip", skipBody, 5*time.Second)
+	if desc, isErr := driver.AdminErr(reply); isErr {
+		t.Fatalf("skip failed: %s", desc)
+	}
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool {
+		return d.State == "running" && d.Counters["skipped:claims-2"] > 0
+	})
+	awaitSubscribed(t, srv, subject)
+
+	// A clean drain publishes the final status document; then the output is
+	// complete, and must record no violation anywhere along the way.
+	p.StopGraceful(t)
+	if out := p.Output(); strings.Contains(strings.ToLower(out), violationText) {
+		t.Errorf("the fixture drew a permissions violation under the D-10 claim set; "+
+			"either the SDK touches a subject the table does not list, or the table must grow:\n%s", out)
+	}
+
+	// The second control: the same fixture under short, whose claim set lacks
+	// the status row, prints the violation its first status publish draws. If
+	// this stops arriving, the assertion above has gone blind, not green.
+	shortURL := fmt.Sprintf("nats://short:short@127.0.0.1:%d", srv.Port)
+	p2 := driver.Spawn(t, bin, shortURL, driver.Identity{ConnectorID: instanceID + "-short"}.Env(),
+		"-subject="+subject)
+	p2.WaitOutput(t, violationText, 15*time.Second)
+	p2.StopGraceful(t)
+}
+
+// violationText is the lower-cased core of the server's "Permissions Violation
+// for Publish to ..." error, as nats.go's default handler prints it.
+const violationText = "permissions violation"
 
 // awaitSubscribed blocks until the fixture's Run hook is subscribed to
 // subject, by asking the embedded server whether anything subscribes to it
