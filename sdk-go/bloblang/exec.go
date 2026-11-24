@@ -54,7 +54,7 @@ func mapOne(exec *blobl.Executor, m transform.Message) transform.Result {
 	if out == nil { // root = deleted()
 		return transform.Result{}
 	}
-	om, err := fromService(out, m.Subject)
+	om, err := fromService(out, m)
 	if err != nil {
 		return transform.Result{Err: err}
 	}
@@ -82,6 +82,19 @@ func toService(m transform.Message) *service.Message {
 	}
 	in.MetaSetMut(metaSubject, m.Subject)
 	return in
+}
+
+// inheritedHeader reports whether output metadata k = v is a header the input
+// message arrived with rather than one the mapping produced: in has a header
+// spelled exactly k (nats.Header's Get canonicalises, so the map is indexed
+// directly) whose first value, the one toService bound, is the string v.
+func inheritedHeader(in nats.Header, k string, v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	vs := in[k]
+	return len(vs) > 0 && vs[0] == s
 }
 
 // headerNameProblem says why nats.go won't send a header named name, which
@@ -133,16 +146,17 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
-// fromService converts a mapped message back. Null root -> empty payload
-// (symmetric with binding); nats_subject -> the output subject, or
-// origSubject when the mapping doesn't set nats_subject or deletes it, and
-// whichever comes out must be a literal subject (subject.ValidLiteral) of
-// at most subject.MaxSubjectLen bytes; a subject the mapping rewrote (one
-// that differs from origSubject) must also be outside the server's
-// namespaces (subject.Reserved) and carry no notice suffix
-// (subject.IsNotice); other metadata -> headers with reserved keys
+// fromService converts a mapped message back; in is the input message it was
+// mapped from. Null root -> empty payload (symmetric with binding);
+// nats_subject -> the output subject, or in.Subject when the mapping doesn't
+// set nats_subject or deletes it, and whichever comes out must be a literal
+// subject (subject.ValidLiteral) of at most subject.MaxSubjectLen bytes; a
+// subject the mapping rewrote (one that differs from in.Subject) must also
+// be outside the server's namespaces (subject.Reserved) and carry no notice
+// suffix (subject.IsNotice); other metadata -> headers with reserved keys
 // stripped, non-strings JSON-encoded, names validated and the server's own
-// Nats-* names refused (transform.ReservedHeader).
+// Nats-* names (transform.ReservedHeader) refused unless the message arrived
+// with that header, spelled that way, carrying that value.
 // nats.go refuses to publish to an empty or whitespace subject
 // (ErrBadSubject) and a message with an invalid header name
 // (ErrBadHeaderMsg); rejecting them here makes the failure this message's
@@ -155,7 +169,7 @@ func truncate(s string, n int) string {
 // published; this backend's own checks are defence in depth for the rules a
 // mapping alone can break, so the failure is this backend's per-message
 // error even in a connector that forgets the guard.
-func fromService(out *service.Message, origSubject string) (transform.Message, error) {
+func fromService(out *service.Message, in transform.Message) (transform.Message, error) {
 	var payload []byte
 	if v, err := out.AsStructured(); err == nil && v == nil {
 		payload = nil
@@ -166,7 +180,7 @@ func fromService(out *service.Message, origSubject string) (transform.Message, e
 		}
 		payload = append([]byte(nil), b...) // AsBytes result is not ours to keep
 	}
-	subj := origSubject
+	subj := in.Subject
 	hdr := nats.Header{}
 	var werr error
 	_ = out.MetaWalkMut(func(k string, v any) error {
@@ -188,9 +202,25 @@ func fromService(out *service.Message, origSubject string) (transform.Message, e
 		}
 		// The server acts on a Nats-* header (Nats-Msg-Id dedups, Nats-Rollup
 		// purges, Nats-Expected-* gates the publish), so a mapping may not set
-		// one; the connector adds its own after the transform. Like a bad name,
-		// this wins over a subject error whatever the map order.
-		if transform.ReservedHeader(k) {
+		// one; the connector adds its own after the transform. Like the subject
+		// rule below, this holds a header the mapping produced, not one it
+		// inherited: a sink consuming a stream sees the server's own headers on
+		// every message (Nats-Msg-Id on one published with a dedup id,
+		// Nats-Stream-Source on a sourced one) and must still be able to
+		// transform them, and whether they may go out again is its guard's
+		// decision, not the mapping's. Inherited means the input message
+		// arrived with a header of that exact spelling and this value (its
+		// first value, the one toService bound): the input's metadata is
+		// carried through to the output whether or not the mapping touched it,
+		// so the walk can't tell an untouched key from one set to the same
+		// value, and a mapping that sets a header to what it inherited changes
+		// nothing. Anything else is the mapping's: a new name, a changed value,
+		// a respelling (the server matches the exact spelling, so `nats-msg-id`
+		// set from an inherited `Nats-Msg-Id` is a new header). A mapping can
+		// therefore neither add nor alter a control header, only pass or delete
+		// one. Like a bad name, this wins over a subject error whatever the map
+		// order.
+		if transform.ReservedHeader(k) && !inheritedHeader(in.Header, k, v) {
 			werr = fmt.Errorf("%w: header name %q is reserved for the NATS server",
 				transform.ErrReservedHeader, k)
 			return werr
@@ -233,7 +263,7 @@ func fromService(out *service.Message, origSubject string) (transform.Message, e
 	// the mapping touched it, so the walk can't tell an untouched key from
 	// one set to the same value, and a mapping that sets the subject to the
 	// one it inherited changes nothing.
-	if subj != origSubject {
+	if subj != in.Subject {
 		if subject.Reserved(subj) {
 			return transform.Message{}, fmt.Errorf(
 				"%w: %s %q: a message subject can't be in a server-reserved namespace",

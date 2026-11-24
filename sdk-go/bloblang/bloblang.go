@@ -39,9 +39,13 @@
 // notice suffix (subject.IsNotice: a last token `error` or `oversize`); an
 // inherited subject is only held to the first two rules, so a connector that
 // consumes advisories or notices can still transform them. Header names
-// must be ones NATS can send and must not start with `Nats-` in any letter
-// case: that prefix is the server's control headers, and a client that
-// canonicalises header names turns `nats-rollup` into the live one.
+// must be ones NATS can send, and a header the mapping sets must not start
+// with `Nats-` in any letter case: that prefix is the server's control
+// headers, and a client that canonicalises header names turns `nats-rollup`
+// into the live one. A `Nats-` header the message arrived with (a stream's
+// `Nats-Msg-Id` or `Nats-Stream-Source`) is not the mapping's: it passes
+// through unchanged, or the mapping deletes it, but a mapping that changes
+// its value or respells it has set a new one.
 // Otherwise the message fails with a per-message error: a subject error
 // wraps transform.ErrUnpublishableSubject and a reserved header's wraps
 // transform.ErrReservedHeader. These checks are defence in depth; the

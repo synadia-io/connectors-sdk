@@ -446,16 +446,121 @@ func TestNatsLikeHeaderNamesPass(t *testing.T) {
 }
 
 // TestReservedHeaderWinsOverBadSubject: with both wrong, the header error is
-// reported, whatever order the metadata is walked in.
+// reported, whatever order the metadata is walked in. The input carries a
+// Nats-Msg-Id the mapping leaves alone, so the walk also has an inherited
+// control header to pass over on its way to the one the mapping set.
 func TestReservedHeaderWinsOverBadSubject(t *testing.T) {
 	f := compile(t, "root = this\nmeta nats_subject = \"$JS.API.x\"\nmeta \"Nats-Rollup\" = \"all\"")
+	h := nats.Header{}
+	h.Set("Nats-Msg-Id", "id-1")
 	for range 50 {
-		res, err := f(context.Background(), []transform.Message{msg("a.b", `{}`, nil)})
+		res, err := f(context.Background(), []transform.Message{msg("a.b", `{}`, h)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if e := res[0].Err; !errors.Is(e, transform.ErrReservedHeader) {
-			t.Fatalf("error = %v, want the reserved-header error", e)
+		e := res[0].Err
+		if !errors.Is(e, transform.ErrReservedHeader) || !strings.Contains(e.Error(), `"Nats-Rollup"`) {
+			t.Fatalf("error = %v, want the reserved-header error naming Nats-Rollup", e)
 		}
+	}
+}
+
+// inheritedMsg returns a message on "orders.eu" carrying the server's headers
+// a sink reads off a stream: a Nats-Msg-Id (the publisher's dedup id) and a
+// Nats-Stream-Source (the sourcing stream's provenance).
+func inheritedMsg(payload string) transform.Message {
+	h := nats.Header{}
+	h.Set("Nats-Msg-Id", "id-1")
+	h.Set("Nats-Stream-Source", "ORDERS 7 orders.eu")
+	return msg("orders.eu", payload, h)
+}
+
+// TestInheritedReservedHeaderPassesThrough: a Nats-* header the message
+// arrived with is the server's, not the mapping's, so it flows through to the
+// output unchanged, whether the mapping leaves the headers alone, rewrites
+// the payload, or sets the header to the value it inherited. A sink consuming
+// a stream must be able to transform the messages on it, and every one of
+// them may carry a Nats-Msg-Id or a Nats-Stream-Source.
+func TestInheritedReservedHeaderPassesThrough(t *testing.T) {
+	for _, mapping := range []string{
+		"root = this",
+		"root.y = this.x",
+		"root = this\nmeta \"Nats-Msg-Id\" = @\"Nats-Msg-Id\"",
+		"root = this\nmeta \"Nats-Msg-Id\" = \"id-1\"",
+	} {
+		r := run1(t, mapping, inheritedMsg(`{"x":1}`))
+		if r.Err != nil || len(r.Output) != 1 {
+			t.Errorf("mapping %q: got %+v, want one output", mapping, r)
+			continue
+		}
+		out := r.Output[0]
+		if out.Header.Get("Nats-Msg-Id") != "id-1" || out.Header.Get("Nats-Stream-Source") != "ORDERS 7 orders.eu" {
+			t.Errorf("mapping %q: headers = %+v, want the inherited Nats-* headers unchanged", mapping, out.Header)
+		}
+	}
+}
+
+// TestInheritedReservedHeaderRewriteErrors: a mapping may not alter an
+// inherited control header: a changed value, a non-string value, or a
+// respelling (the server matches the exact spelling, so `nats-msg-id` is a
+// new header) is the mapping's own Nats-* header and fails the message.
+func TestInheritedReservedHeaderRewriteErrors(t *testing.T) {
+	for _, tt := range []struct{ mapping, name string }{
+		{"root = this\nmeta \"Nats-Msg-Id\" = \"other\"", "Nats-Msg-Id"},
+		{"root = this\nmeta \"Nats-Msg-Id\" = @\"Nats-Msg-Id\" + \"-2\"", "Nats-Msg-Id"},
+		{"root = this\nmeta \"Nats-Msg-Id\" = 1", "Nats-Msg-Id"},
+		{"root = this\nmeta \"nats-msg-id\" = @\"Nats-Msg-Id\"", "nats-msg-id"},
+		{"root = this\nmeta \"Nats-Stream-Source\" = \"OTHER 1 x\"", "Nats-Stream-Source"},
+	} {
+		r := run1(t, tt.mapping, inheritedMsg(`{}`))
+		if r.Err == nil {
+			t.Errorf("mapping %q: got %+v, want a per-message error", tt.mapping, r.Output)
+			continue
+		}
+		if !errors.Is(r.Err, transform.ErrReservedHeader) {
+			t.Errorf("mapping %q: error = %q, want it to wrap transform.ErrReservedHeader", tt.mapping, r.Err)
+		}
+		if !strings.Contains(r.Err.Error(), strconv.Quote(tt.name)) {
+			t.Errorf("mapping %q: error = %q, want it to name %q", tt.mapping, r.Err, tt.name)
+		}
+	}
+}
+
+// TestInheritedReservedHeaderDeleted: deleting an inherited control header is
+// not setting one; the message passes and the output lacks the header while
+// the other inherited one stays.
+func TestInheritedReservedHeaderDeleted(t *testing.T) {
+	r := run1(t, "root = this\nmeta \"Nats-Msg-Id\" = deleted()", inheritedMsg(`{}`))
+	if r.Err != nil || len(r.Output) != 1 {
+		t.Fatalf("got %+v, want one output", r)
+	}
+	out := r.Output[0]
+	if _, present := out.Header["Nats-Msg-Id"]; present {
+		t.Errorf("headers = %+v, want Nats-Msg-Id deleted", out.Header)
+	}
+	if out.Header.Get("Nats-Stream-Source") != "ORDERS 7 orders.eu" {
+		t.Errorf("headers = %+v, want Nats-Stream-Source kept", out.Header)
+	}
+}
+
+// TestInheritedReservedHeaderNotOnInputErrors: the exemption is for a header
+// the message arrived with. A multi-valued input header is bound by its first
+// value only, so setting its second value is a change; and a header the input
+// has only under another spelling is not inherited under this one.
+func TestInheritedReservedHeaderNotOnInputErrors(t *testing.T) {
+	h := nats.Header{"Nats-Msg-Id": []string{"first", "second"}}
+	r := run1(t, "root = this\nmeta \"Nats-Msg-Id\" = \"second\"", msg("a.b", `{}`, h))
+	if !errors.Is(r.Err, transform.ErrReservedHeader) {
+		t.Errorf("second value: got %+v, want transform.ErrReservedHeader", r)
+	}
+	r = run1(t, "root = this\nmeta \"Nats-Msg-Id\" = \"first\"", msg("a.b", `{}`, h))
+	if r.Err != nil || r.Output[0].Header.Get("Nats-Msg-Id") != "first" {
+		t.Errorf("first value: got %+v, want it passed through", r)
+	}
+	h = nats.Header{"nats-msg-id": []string{"id-1"}}
+	r = run1(t, "root = this\nmeta \"Nats-Msg-Id\" = \"id-1\"", msg("a.b", `{}`, h))
+	if !errors.Is(r.Err, transform.ErrReservedHeader) ||
+		!strings.Contains(r.Err.Error(), strconv.Quote("Nats-Msg-Id")) {
+		t.Errorf("other spelling on input: got %+v, want transform.ErrReservedHeader naming the respelled key", r)
 	}
 }

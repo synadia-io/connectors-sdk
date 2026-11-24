@@ -30,9 +30,12 @@ import (
 // names on read turns "nats-rollup" into the live one, so every spelling is
 // refused. A transform may not set one, since the server acts on it; a
 // connector adds the ones it means to send after the guard has passed the
-// message. Guard wraps it, so a connector classifies that failure with
-// errors.Is. The error's text names the header, which may come from message
-// data, so it isn't fit for a wire header.
+// message. Guard.Check refuses every Nats-* header, inherited or not: a
+// connector relaying NATS messages to NATS strips the inherited ones (a
+// consumed message's Nats-Msg-Id or Nats-Stream-Source, say) before Check,
+// or re-adds them deliberately after it. Guard wraps it, so a connector
+// classifies that failure with errors.Is. The error's text names the header,
+// which may come from message data, so it isn't fit for a wire header.
 var ErrReservedHeader = errors.New("reserved header")
 
 // reservedHeaderPrefix starts every header name the server acts on.
@@ -61,8 +64,13 @@ func ReservedHeader(name string) bool {
 // in a server-reserved namespace (subject.Reserved), carrying a reserved
 // notice suffix (subject.IsNotice), or not covered by any of the
 // connector's data-subject patterns; and a header whose name is reserved
-// for the server (ReservedHeader). A connector adds its own Nats-* headers,
-// such as Nats-Msg-Id, AFTER Check has passed the message.
+// for the server (ReservedHeader), whether the transform set it or the
+// message arrived with it: Check sees only the output and cannot tell the
+// two apart, and the Bloblang backend's inherited-header exemption ends at
+// its output. A connector adds its own Nats-* headers, such as Nats-Msg-Id,
+// AFTER Check has passed the message. A connector relaying NATS messages to
+// NATS strips the inherited Nats-* headers before Check, or re-adds the ones
+// it means to send after it.
 //
 // NewGuard is the constructor; the zero value is not usable, and Check on a
 // nil *Guard panics.

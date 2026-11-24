@@ -83,7 +83,7 @@ func TestTruncateKeepsWholeCharacters(t *testing.T) {
 func TestFromServiceUnmarshalableHeaderValue(t *testing.T) {
 	m := service.NewMessage([]byte(`{}`))
 	m.MetaSetMut("K", make(chan int)) // json.Marshal cannot encode a channel
-	if _, err := fromService(m, "a.b"); err == nil {
+	if _, err := fromService(m, msg("a.b", `{}`, nil)); err == nil {
 		t.Fatal("unmarshalable header value must error")
 	}
 }

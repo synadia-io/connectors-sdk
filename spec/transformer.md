@@ -129,20 +129,31 @@ whose name begins `Nats-` in any letter case fails that message, with the
 same notice shape as a subject failure and its own fixed class. The server
 matches the exact spelling, but a client that canonicalises header names
 on read turns `nats-rollup` into the live one, so every spelling is
-refused. A connector adds the control
-headers it means to send (its `Nats-Msg-Id`, say) after the guard has
-passed the message. Only the exact prefix is reserved: `X-Nats-Trace` and
-`Natsy` are ordinary headers.
+refused. A header the message arrived with is not the mapping's: a sink
+reading a stream sees the server's own headers (`Nats-Msg-Id`,
+`Nats-Stream-Source`) on its messages, and an inherited `Nats-` header
+passes through the mapping unchanged (its first value, which is what a
+mapping sees of any header), or is deleted by it. A mapping that
+sets a new `Nats-` header, changes an inherited one's value, or respells it
+fails the message: a mapping can neither add nor alter a control header.
+The guard on the publish path makes no such distinction: it rejects every
+`Nats-` header on an output, so a connector adds the control headers it
+means to send (its `Nats-Msg-Id`, say) after the guard has passed the
+message, and a connector relaying NATS messages to NATS strips the
+inherited ones before the guard or re-adds them deliberately after it.
+Only the exact prefix is reserved: `X-Nats-Trace` and `Natsy` are ordinary
+headers.
 
 In the Go SDK, `transform.Guard` implements the guard for every publish
 path (`transform.NewGuard(dataSubjectPatterns...)`, then `Check` on each
 output) and wraps `transform.ErrUnpublishableSubject` for a subject
 failure and `transform.ErrReservedHeader` for a reserved header. The
 Bloblang backend additionally rejects, on its own and with the same
-sentinels, a header named `Nats-*` and a **rewritten** output subject that
-is reserved or notice-suffixed; an inherited subject passes through the
-backend, so a connector that consumes advisories or notices can still
-transform them, and the guard decides whether it may publish there.
+sentinels, a `Nats-*` header the mapping **set** and a **rewritten** output
+subject that is reserved or notice-suffixed; an inherited subject or
+`Nats-*` header passes through the backend, so a connector that consumes
+advisories, notices or a stream's messages can still transform them, and
+the guard decides whether they may be published as they are.
 
 ## Retention
 
