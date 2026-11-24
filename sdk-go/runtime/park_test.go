@@ -21,7 +21,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/synadia-io/connectors-sdk/sdk-go/admin"
 	"github.com/synadia-io/connectors-sdk/sdk-go/checkpoint"
 	"github.com/synadia-io/connectors-sdk/sdk-go/identity"
 	"github.com/synadia-io/connectors-sdk/sdk-go/runtime"
@@ -96,6 +98,87 @@ func TestRunHarness_Park_ResumeReentersRunLoop(t *testing.T) {
 	cancel()
 	if code := waitForExit(t, codes); code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
+	}
+}
+
+// TestRunHarness_WithAdminRequestTimeout guards the first real Option: the deadline
+// of the ctx Hooks.Resume gets per admin request is WithAdminRequestTimeout's, counted
+// from the request's arrival, and a non-positive value leaves the default in
+// place. The remaining time is read inside the hook, moments after the ctx is
+// made, so the lower bound of half the configured value is slack for
+// scheduler jitter alone; it still tells the default apart from a raised
+// value and an expired ctx from either.
+func TestRunHarness_WithAdminRequestTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []runtime.Option
+		want time.Duration
+	}{
+		{
+			name: "raised",
+			opts: []runtime.Option{runtime.WithAdminRequestTimeout(20 * time.Second)},
+			want: 20 * time.Second,
+		},
+		{
+			name: "zero keeps default",
+			opts: []runtime.Option{runtime.WithAdminRequestTimeout(0)},
+			want: admin.DefaultRequestTimeout,
+		},
+		{
+			name: "negative keeps default",
+			opts: []runtime.Option{runtime.WithAdminRequestTimeout(-time.Second)},
+			want: admin.DefaultRequestTimeout,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			obs, sub := startHarnessEnv(t)
+
+			var runs atomic.Int32
+			var remaining atomic.Int64
+			h := runtime.Hooks{
+				Run: func(ctx context.Context, rt *runtime.Runtime) error {
+					if runs.Add(1) == 1 {
+						return runtime.Park("poison")
+					}
+					<-ctx.Done()
+					return nil
+				},
+				Resume: func(ctx context.Context, rt *runtime.Runtime) error {
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						t.Error("Resume ctx has no deadline")
+						return nil
+					}
+					remaining.Store(int64(time.Until(deadline)))
+					return nil
+				},
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			codes := make(chan int, 1)
+			go func() {
+				codes <- runtime.RunHarness(
+					ctx, nil, "test-connector", "1.0.0", nil, testCaps, h, tt.opts...)
+			}()
+
+			waitForState(t, sub, status.Parked)
+			if errHeader := adminRequest(t, obs, "resume", nil); errHeader != "" {
+				t.Fatalf("admin resume returned an error: %s", errHeader)
+			}
+			waitForState(t, sub, status.Running)
+
+			got := time.Duration(remaining.Load())
+			if got > tt.want || got < tt.want/2 {
+				t.Errorf("Resume ctx deadline %v out, want within (%v, %v]",
+					got.Round(time.Millisecond), tt.want/2, tt.want)
+			}
+
+			cancel()
+			if code := waitForExit(t, codes); code != 0 {
+				t.Errorf("exit code = %d, want 0", code)
+			}
+		})
 	}
 }
 

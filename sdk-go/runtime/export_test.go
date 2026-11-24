@@ -31,7 +31,7 @@ func RunHarness(ctx context.Context, args []string, name, version string, cfg an
 }
 
 // NoOption is an Option that changes nothing, for tests of the option
-// plumbing while no real Option exists.
+// plumbing itself as distinct from any one Option's effect.
 var NoOption Option = func(*options) {}
 
 // ModeFromArgs is modeFromArgs: D-11 mode selection.

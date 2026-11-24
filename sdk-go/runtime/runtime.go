@@ -129,10 +129,12 @@ type Hooks struct {
 	// Resume is invoked by the admin `resume` endpoint before the loop is
 	// re-entered, giving the connector a chance to reset whatever the park
 	// left behind, including after the park on a config error, where Run has
-	// not been entered yet. ctx carries the admin request's deadline, is
-	// cancelled once the request is answered, and is cancelled when the
-	// harness shuts down, so a Resume that dials or waits should honor it.
-	// The harness waits for Resume to return whatever ctx says: one that
+	// not been entered yet. ctx carries the admin request's deadline
+	// (WithAdminRequestTimeout, default admin.DefaultRequestTimeout), is cancelled
+	// once the request is answered, and is cancelled when the harness shuts
+	// down, so a Resume that dials or waits should honor it, and one that
+	// needs longer than the default is the reason to pass WithAdminRequestTimeout
+	// to Main. The harness waits for Resume to return whatever ctx says: one that
 	// ignores ctx holds the admin request, and blocks every other resume or
 	// skip, until it does. rt is the same Runtime Run is handed, so Resume
 	// reaches the connection and the status publisher without the connector
@@ -212,20 +214,44 @@ func Main(name, version string, cfg any, caps []string, h Hooks, opts ...Option)
 	return run(ctx, commandArgs(), name, version, cfg, caps, h, applyOptions(opts))
 }
 
-// Option adjusts how Main runs the harness. It is the extension point for the
-// overrides the SDK plans — the NATS connection, the Identity, and the source
-// of the config document — none of which exists yet, so no Option is defined
-// today: zero options is the normal call, and every connector written
-// against it keeps compiling when the first Option lands.
+// Option adjusts how Main runs the harness. Zero options is the normal call;
+// WithAdminRequestTimeout is the one defined today, and the same tail is the
+// extension point for the overrides the SDK plans — the NATS connection, the
+// Identity, and the source of the config document — so every connector
+// written against Main keeps compiling as they land.
 type Option func(*options)
 
-// options is the harness configuration the Options build. It has no fields
-// yet; see Option.
-type options struct{}
+// options is the harness configuration the Options build; see Option.
+type options struct {
+	// adminTimeout is the deadline of the ctx Hooks.Resume and Hooks.Skip get
+	// per admin request (WithAdminRequestTimeout).
+	adminTimeout time.Duration
+}
 
-// applyOptions folds opts into the harness configuration Main hands to run.
+// WithAdminRequestTimeout sets the deadline of the ctx handed to Hooks.Resume and
+// Hooks.Skip, counted from the moment the admin request arrives. The default
+// is admin.DefaultRequestTimeout, 5s: the nats CLI's default request timeout
+// and the conformance suite both wait that long for a reply, so a hook still
+// working past it answers nobody. A connector whose Resume legitimately takes
+// longer — a slow reconnect, say — raises it here, since the deadline is the
+// connector's to set: an admin request over NATS carries none of its own, and
+// whoever sends it then has to wait at least as long (nats req --timeout).
+//
+// A non-positive d is a programming error; it is ignored and the default
+// kept, rather than panicking at the one call Main gets, so the mistake
+// cannot take the connector down with it.
+func WithAdminRequestTimeout(d time.Duration) Option {
+	return func(o *options) {
+		if d > 0 {
+			o.adminTimeout = d
+		}
+	}
+}
+
+// applyOptions folds opts into the harness configuration Main hands to run,
+// defaults first.
 func applyOptions(opts []Option) options {
-	var o options
+	o := options{adminTimeout: admin.DefaultRequestTimeout}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -236,7 +262,8 @@ func applyOptions(opts []Option) options {
 // applied options injected, so the harness is testable without
 // process-global signals.
 func run(
-	ctx context.Context, args []string, name, version string, cfg any, caps []string, h Hooks, _ options,
+	ctx context.Context, args []string, name, version string, cfg any, caps []string, h Hooks,
+	o options,
 ) int {
 	switch modeFromArgs(args) {
 	case modeSpec:
@@ -244,7 +271,7 @@ func run(
 	case modeCheck:
 		return runCheck(ctx, cfg, h)
 	default:
-		return runConnector(ctx, name, connectorVersion(version), cfg, h)
+		return runConnector(ctx, name, connectorVersion(version), cfg, h, o)
 	}
 }
 
@@ -350,7 +377,7 @@ func runCheck(ctx context.Context, cfg any, h Hooks) int {
 // with reason "unresolved-secret"; that error is carried past startup and
 // handed to the park loop below, so the connector comes up far enough to
 // report it and to accept a resume.
-func runConnector(ctx context.Context, name, version string, cfg any, h Hooks) int {
+func runConnector(ctx context.Context, name, version string, cfg any, h Hooks, o options) int {
 	if h.Run == nil {
 		log.Print("runtime: Hooks.Run is required in run mode")
 		return 1
@@ -422,7 +449,7 @@ func runConnector(ctx context.Context, name, version string, cfg any, h Hooks) i
 	rt := &Runtime{ID: id, Conn: nc, Status: pub, Version: version, clock: clock}
 	ctl := newController(pub, h, rt, ctx)
 
-	svc, err := admin.Start(nc, id, version, ctl)
+	svc, err := admin.Start(nc, id, version, ctl, admin.WithRequestTimeout(o.adminTimeout))
 	if err != nil {
 		// The last fail-stop, and the only one with a publisher already in
 		// hand: without an admin surface there is nothing for an operator to
