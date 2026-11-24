@@ -54,7 +54,8 @@ Every endpoint uses NATS micro's standard error headers
 (`Nats-Service-Error`, `Nats-Service-Error-Code`) rather than an
 ad hoc error shape in the response body — a generic micro client
 already knows how to surface these without connector-specific
-handling.
+handling. The error message is redacted the same way a status
+`reason` is (`status.md`) and may be truncated.
 
 ## Relationship to lifecycle
 
