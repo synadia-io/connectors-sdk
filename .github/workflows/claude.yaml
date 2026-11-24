@@ -1,0 +1,40 @@
+name: Claude Code
+
+# Thin caller for the shared synadia-io/ai-workflows reusable workflow (same
+# setup as nats-io/nats.go): auto-review on PR open for authors with write
+# access, and @claude in PR/issue comments. CLAUDE_GH_APP_ID and both secrets
+# are synadia-io org-level. checkout_mode base: this repo is public, so the
+# secret-bearing runner never checks out PR code; Claude reads the diff via gh.
+# GITHUB_TOKEN needs contents:read and actions:read — required by
+# claude-code-action for restoring trusted config files from the base branch.
+# All other GitHub API access uses the App token.
+permissions:
+  contents: read
+  actions: read
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  claude:
+    uses: synadia-io/ai-workflows/.github/workflows/claude.yml@v2
+    with:
+      gh_app_id: ${{ vars.CLAUDE_GH_APP_ID }}
+      checkout_mode: "base"
+      review_focus: |
+        Additionally focus on:
+        - Goroutine leaks and proper channel/context cancellation, including SIGTERM drain
+        - Race conditions and correct mutex usage
+        - Error handling patterns (wrapping, sentinel errors)
+        - API compatibility of the exported sdk-go packages; call out any breaking change
+        - spec/ is normative: behavior in sdk-go must match it, and a spec change must
+          update its JSON Schemas, sdk-go and the conformance suite together
+        - Credentials and secret:// values must never reach logs, status or errors
+    secrets:
+      claude_oauth_token: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
+      gh_app_private_key: ${{ secrets.CLAUDE_GH_APP_PRIVATE_KEY }}
