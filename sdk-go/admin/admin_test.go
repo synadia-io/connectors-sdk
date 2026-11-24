@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
@@ -146,6 +147,10 @@ type panicController struct {
 	statusPanic bool
 	resumePanic bool
 	skipPanic   bool
+
+	// skipPanicValue, when set, is the value Skip panics with instead of
+	// "skip boom", so a test can plant a credential in it.
+	skipPanicValue string
 }
 
 func (p *panicController) Status() status.Document {
@@ -164,6 +169,9 @@ func (p *panicController) Resume(context.Context) error {
 
 func (p *panicController) Skip(context.Context, string) error {
 	if p.skipPanic {
+		if p.skipPanicValue != "" {
+			panic(p.skipPanicValue)
+		}
 		panic("skip boom")
 	}
 	return nil
@@ -452,6 +460,142 @@ func TestStart_ResumeEndpoint_NotParkedReturnsMicroError(t *testing.T) {
 	}
 	if msg.Header.Get(micro.ErrorCodeHeader) == "" {
 		t.Error("Nats-Service-Error-Code header missing, want a non-empty code")
+	}
+}
+
+// TestStart_ErrorMessagesAreRedacted guards the admin surface's error choke
+// point: a Controller error or panic value quoting a URI with userinfo must
+// reach the Nats-Service-Error header with the credential masked, the same
+// way a status reason is (status.RedactReason), and the rest of the message
+// intact.
+func TestStart_ErrorMessagesAreRedacted(t *testing.T) {
+	const secret = "p4ss"
+	const uri = "mongodb://u:" + secret + "@h/db"
+
+	t.Run("resume error", func(t *testing.T) {
+		nc, cleanup := startTestServer(t)
+		defer cleanup()
+
+		id := testIdentity()
+		fc := &fakeController{resumeErr: errors.New("connect " + uri + ": refused")}
+		_, _, resumeSubj, _ := startAdmin(t, nc, id, fc)
+
+		msg, err := nc.Request(resumeSubj, nil, 2*time.Second)
+		if err != nil {
+			t.Fatalf("Request(%q): %v", resumeSubj, err)
+		}
+		got := msg.Header.Get(micro.ErrorHeader)
+		if strings.Contains(got, secret) {
+			t.Errorf("Nats-Service-Error = %q, leaks %q", got, secret)
+		}
+		if want := "connect mongodb://REDACTED@h/db: refused"; got != want {
+			t.Errorf("Nats-Service-Error = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("skip panic", func(t *testing.T) {
+		nc, cleanup := startTestServer(t)
+		defer cleanup()
+
+		id := testIdentity()
+		fc := &panicController{skipPanic: true, skipPanicValue: "dial " + uri}
+		svc, err := admin.Start(nc, id, "1.0.0", fc)
+		if err != nil {
+			t.Fatalf("admin.Start: %v", err)
+		}
+		t.Cleanup(func() { _ = svc.Stop() })
+
+		body, _ := json.Marshal(map[string]string{"key": "k1"})
+		msg, err := nc.Request(identity.AdminRoot(id)+".skip", body, 2*time.Second)
+		if err != nil {
+			t.Fatalf("Request(skip): %v", err)
+		}
+		got := msg.Header.Get(micro.ErrorHeader)
+		if strings.Contains(got, secret) {
+			t.Errorf("Nats-Service-Error = %q, leaks %q", got, secret)
+		}
+		if !strings.Contains(got, "panic") || !strings.Contains(got, "mongodb://REDACTED@h") {
+			t.Errorf("Nats-Service-Error = %q, want the panic with the URI redacted", got)
+		}
+	})
+}
+
+// TestStart_ErrorMessagesCapOnRuneBoundary guards the cut itself: a message
+// of multi-byte runes that is cut at the byte cap must still be valid UTF-8,
+// so the cut lands on a rune start, not inside one.
+func TestStart_ErrorMessagesCapOnRuneBoundary(t *testing.T) {
+	nc, cleanup := startTestServer(t)
+	defer cleanup()
+
+	id := testIdentity()
+	fc := &fakeController{resumeErr: errors.New(strings.Repeat("é", 600))} // 1200 bytes
+	_, _, resumeSubj, _ := startAdmin(t, nc, id, fc)
+
+	msg, err := nc.Request(resumeSubj, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Request(%q): %v", resumeSubj, err)
+	}
+	got := msg.Header.Get(micro.ErrorHeader)
+	if !utf8.ValidString(got) {
+		t.Errorf("Nats-Service-Error is not valid UTF-8 after the cut: %q", got)
+	}
+	if !strings.HasSuffix(got, admin.TruncationMarker) {
+		t.Errorf("Nats-Service-Error does not end with the truncation marker %q", admin.TruncationMarker)
+	}
+	if limit := admin.MaxErrorMessageBytes + len(admin.TruncationMarker); len(got) > limit {
+		t.Errorf("Nats-Service-Error is %d bytes, want at most %d", len(got), limit)
+	}
+}
+
+// TestStart_EmptyErrorMessageStillAnswers guards the edge the choke point
+// must not fall into: micro refuses to send an error with an empty
+// description, which would leave the requester to time out, so an empty
+// Controller error is answered with a placeholder.
+func TestStart_EmptyErrorMessageStillAnswers(t *testing.T) {
+	nc, cleanup := startTestServer(t)
+	defer cleanup()
+
+	id := testIdentity()
+	fc := &fakeController{resumeErr: errors.New("")}
+	_, _, resumeSubj, _ := startAdmin(t, nc, id, fc)
+
+	msg, err := nc.Request(resumeSubj, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Request(%q): %v, want an error response rather than a timeout", resumeSubj, err)
+	}
+	if got := msg.Header.Get(micro.ErrorHeader); got == "" {
+		t.Error("want a non-empty Nats-Service-Error header for an empty Controller error")
+	}
+}
+
+// TestStart_ErrorMessagesAreCapped guards the cap on the same choke point: a
+// Controller error of several kilobytes is cut to the documented bound plus
+// a truncation marker before it reaches the header.
+func TestStart_ErrorMessagesAreCapped(t *testing.T) {
+	nc, cleanup := startTestServer(t)
+	defer cleanup()
+
+	id := testIdentity()
+	fc := &fakeController{resumeErr: errors.New(strings.Repeat("x", 5*1024))}
+	_, _, resumeSubj, _ := startAdmin(t, nc, id, fc)
+
+	msg, err := nc.Request(resumeSubj, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Request(%q): %v", resumeSubj, err)
+	}
+	got := msg.Header.Get(micro.ErrorHeader)
+	if got == "" {
+		t.Fatal("want a Nats-Service-Error header, got none")
+	}
+	if !strings.HasSuffix(got, admin.TruncationMarker) {
+		t.Errorf("Nats-Service-Error does not end with the truncation marker %q", admin.TruncationMarker)
+	}
+	if limit := admin.MaxErrorMessageBytes + len(admin.TruncationMarker); len(got) > limit {
+		t.Errorf("Nats-Service-Error is %d bytes, want at most %d", len(got), limit)
+	}
+	if len(got) < admin.MaxErrorMessageBytes {
+		t.Errorf("Nats-Service-Error is %d bytes, want the full cap of %d kept",
+			len(got), admin.MaxErrorMessageBytes)
 	}
 }
 

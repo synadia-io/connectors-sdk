@@ -15,13 +15,26 @@ package status
 
 import "regexp"
 
-// uriUserinfoRe matches the userinfo component of a URI-shaped substring:
-// "scheme://user:pass@host", or "scheme://token@host". It is character-for-
-// character the pattern the mongodb (uriUserinfoRe) and s3
-// (s3EndpointUserinfoRe) connectors already redact with, so the harness's
-// central redaction and a connector's own defense-in-depth redaction produce
-// identical output on the shape they both cover.
-var uriUserinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@`)
+// uriUserinfoRe matches the userinfo component of a URI-shaped token in
+// free text: "scheme://user:pass@host", or "scheme://token@host". The scheme
+// is followed by two slashes, each optionally backslash-escaped, so a URI
+// quoted inside JSON ("mongodb:\/\/u:p@h") is matched too. The userinfo is
+// everything non-whitespace up to the LAST "@" of the whitespace-delimited
+// token, so a password containing "/" or "@" ("pa/ss", "p@ss") is masked
+// whole rather than leaking its tail. The cost is over-redaction: anything
+// non-whitespace between the scheme and the token's last "@" goes, so a URI
+// with no userinfo whose path or query contains "@" ("https://host/path@x")
+// loses everything up to that "@", a comma-separated list of URIs keeps only
+// the last host, and in compact JSON ({"uri":"mongodb://u:p@h","email":"a@b"})
+// the fields up to the last "@" go with it. All accepted, since a reason that
+// is too short beats one that leaks. Out of scope, like every non-URI secret:
+// whitespace inside a password, which a valid URI cannot carry, and a URI cut
+// off before its "@".
+//
+// This is wider than the regex the mongodb and s3 connectors redact with
+// themselves, which stops at the first "/" or "@"; they should adopt
+// RedactReason so the two layers agree.
+var uriUserinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*:\\?/\\?/)\S+@`)
 
 // RedactReason masks the userinfo of any URI found in a status reason,
 // rewriting "scheme://user:pass@host" to "scheme://REDACTED@host". Every

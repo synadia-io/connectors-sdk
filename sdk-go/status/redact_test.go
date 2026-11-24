@@ -32,6 +32,9 @@ func TestRedactReason(t *testing.T) {
 		{"mongodb uri password", "connect failed: mongodb://admin:sup3rs3cret@db:27017/app timed out", "sup3rs3cret"},
 		{"s3 endpoint userinfo", "put failed: https://AKIAKEY:s3cretkey@minio.local/bucket refused", "s3cretkey"},
 		{"token-only userinfo", "amqp://t0ken@broker unreachable", "t0ken"},
+		{"slash in password", "mongodb://user:pa/ss@host/db timed out", "pa/ss"},
+		{"at sign in password", "mongodb://user:p@ss@host/db timed out", "p@ss"},
+		{"json-escaped slashes", `{"uri":"mongodb:\/\/u:p\/w@h"}`, `p\/w`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,6 +44,43 @@ func TestRedactReason(t *testing.T) {
 			}
 			if !strings.Contains(got, "REDACTED") {
 				t.Errorf("RedactReason(%q) = %q, missing REDACTED marker", tt.in, got)
+			}
+		})
+	}
+}
+
+// TestRedactReason_Exact pins the whole output where its shape matters: the
+// userinfo goes as one piece, up to the last "@" of the token, and the host
+// after it survives; two URIs in one reason are redacted independently; a
+// URI with no userinfo but an "@" later in the token is over-redacted, which
+// is the accepted cost; and a bare mailbox with no scheme is not a URI.
+func TestRedactReason_Exact(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{
+			"at sign in password keeps the host",
+			"mongodb://user:p@ss@host/db refused",
+			"mongodb://REDACTED@host/db refused",
+		},
+		{
+			"two uris redacted independently",
+			"primary mongodb://a:s1@h1/db secondary mongodb://b:s2@h2/db",
+			"primary mongodb://REDACTED@h1/db secondary mongodb://REDACTED@h2/db",
+		},
+		{
+			"over-redaction of a path containing an at sign is accepted",
+			"get https://host/path@x failed",
+			"get https://REDACTED@x failed",
+		},
+		{
+			"bare mailbox without a scheme is left alone",
+			"notify user@example.com failed",
+			"notify user@example.com failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := status.RedactReason(tt.in); got != tt.want {
+				t.Errorf("RedactReason(%q)\n got %q\nwant %q", tt.in, got, tt.want)
 			}
 		})
 	}

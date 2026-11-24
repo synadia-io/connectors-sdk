@@ -306,6 +306,69 @@ func TestLoad_NestedUnresolvedSecretGuard(t *testing.T) {
 	}
 }
 
+// dynamicConfig holds document values in the Go types encoding/json decodes
+// without a schema: a connector that passes part of its document through
+// untyped (an options bag, a driver-specific blob) still gets the guard.
+type dynamicConfig struct {
+	Name    string          `json:"name"`
+	Any     any             `json:"any"`
+	Options map[string]any  `json:"options"`
+	Items   []any           `json:"items"`
+	Raw     json.RawMessage `json:"raw"`
+}
+
+// TestLoad_UnresolvedSecretGuardScansUntypedValues pins that the guard reads
+// the document, not the struct: a "secret://" value the struct receives as
+// any, map[string]any, []any or json.RawMessage is what the node-side
+// resolver would have rewritten, so it is reported like a string field, by
+// its dotted path in the document.
+func TestLoad_UnresolvedSecretGuardScansUntypedValues(t *testing.T) {
+	tests := []struct {
+		name, doc, wantPath string
+	}{
+		{"any field", `{"name": "n", "any": "secret://a"}`, `"any"`},
+		{"map[string]any field", `{"name": "n", "options": {"uri": "secret://b"}}`, `"options.uri"`},
+		{"[]any field", `{"name": "n", "items": ["ok", "secret://c"]}`, `"items[1]"`},
+		{"RawMessage object", `{"name": "n", "raw": {"inner": {"pw": "secret://d"}}}`, `"raw.inner.pw"`},
+		{
+			"RawMessage array",
+			`{"name": "n", "raw": {"list": [1, {"k": "secret://e"}]}}`,
+			`"raw.list[1].k"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setDocEnv(t, writeDoc(t, t.TempDir(), tt.doc))
+			var cfg dynamicConfig
+			err := config.Load(&cfg)
+			if err == nil {
+				t.Fatal("Load() error = nil, want unresolved-secret error")
+			}
+			if !errors.Is(err, config.ErrUnresolvedSecret) {
+				t.Errorf("Load() error = %v, want it to wrap config.ErrUnresolvedSecret", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantPath) {
+				t.Errorf("Load() error = %v, want it to name %s", err, tt.wantPath)
+			}
+		})
+	}
+}
+
+// TestLoad_UntypedMidStringSecretPrefixPassesThrough is the whole-value half
+// for untyped values: a mid-string occurrence inside a RawMessage or a
+// map[string]any is ordinary data, and the document loads.
+func TestLoad_UntypedMidStringSecretPrefixPassesThrough(t *testing.T) {
+	doc := `{"name": "n", "options": {"note": "x secret://y"}, "raw": ["see secret://z"], "any": 7}`
+	setDocEnv(t, writeDoc(t, t.TempDir(), doc))
+	var cfg dynamicConfig
+	if err := config.Load(&cfg); err != nil {
+		t.Fatalf("Load() error = %v, want mid-string occurrences to pass through", err)
+	}
+	if got := cfg.Options["note"]; got != "x secret://y" {
+		t.Errorf("cfg.Options[note] = %q, want it preserved", got)
+	}
+}
+
 // flagBoundConfig is a config struct the way connectors bind flags into it:
 // flag.StringVar(&cfg.Field, ...) fills the fields before Load runs. LogLevel
 // stands for a process-level knob the document can't carry (json:"-").

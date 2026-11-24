@@ -17,10 +17,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/synadia-io/connectors-sdk/sdk-go/status"
 )
 
 // The nexlet launch contract: the node injects the NATS endpoint and, in
@@ -104,9 +107,25 @@ func connectFromEnv(name string, onClosed func()) (*nats.Conn, error) {
 
 	nc, err := nats.Connect(servers, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s: %w", servers, err)
+		// The URL list may carry userinfo (nats://user:pass@host) and the
+		// error is logged, so both halves are masked like a status reason:
+		// the list, and nats.go's own text, which quotes a URL it could not
+		// parse. Nothing matches on this error, so it wraps nothing.
+		return nil, fmt.Errorf("connect to %s: %s",
+			redactServerList(servers), status.RedactReason(err.Error()))
 	}
 	return nc, nil
+}
+
+// redactServerList masks the userinfo of each URL in a comma-separated
+// server list on its own. Redacting the list whole would run from the first
+// URL's scheme to the last URL's "@" and swallow every host but the last.
+func redactServerList(servers string) string {
+	urls := strings.Split(servers, ",")
+	for i, u := range urls {
+		urls[i] = status.RedactReason(u)
+	}
+	return strings.Join(urls, ",")
 }
 
 // credsOptionFromEnv builds the JWT+nkey auth option from the launch
