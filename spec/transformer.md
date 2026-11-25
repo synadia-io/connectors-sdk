@@ -41,8 +41,9 @@ reserved for connector-emitted notices:
 
 Notices are always published on the **pre-transform** subject plus the
 suffix (a rewritten subject may be the very thing that is invalid). A
-transform must not be able to produce a subject carrying a reserved
-suffix — notices are unforgeable. A connector binds each suffix it is
+transform must not be able to route a message to a subject carrying a
+reserved suffix — notices are unforgeable; the routing guard below
+enforces it on every publish path. A connector binds each suffix it is
 configured to publish a notice on into the streams that carry its data
 subjects, so the first notice cannot fail with no-responders. A connector
 that is not configured to publish a notice need not bind its suffix: one
@@ -81,18 +82,78 @@ a header:
 
 - `nats_subject` — the message subject; injected on input, and if
   written by the mapping, consumed as the output subject (subject to
-  the connector's routing guard) and stripped from the output headers.
-  When the output subject, written or inherited, isn't a literal
-  subject, or is longer than the subject length limit in `subjects.md`
-  (3072 bytes), the backend fails that message with a per-message
-  mapping error: every `.`-separated token must satisfy the token rule
-  in `subjects.md`. The error states an over-long subject's length and
-  quotes only its start. In the Go SDK every backend wraps
+  the connector's routing guard, below) and stripped from the output
+  headers. When the output subject, written or inherited, isn't a
+  literal subject, or is longer than the subject length limit in
+  `subjects.md` (3072 bytes), the backend fails that message with a
+  per-message mapping error: every `.`-separated token must satisfy the
+  token rule in `subjects.md`. The error states an over-long subject's
+  length and quotes only its start. In the Go SDK every backend wraps
   `transform.ErrUnpublishableSubject` in that error, so a connector
   classifies it with `errors.Is` whatever the backend.
 - `nats_reply_subject` — reserved for future use; stripped from output.
 
 Reserved keys never appear as wire headers.
+
+### Routing guard
+
+A transform decides a message's payload, headers and subject; it does not
+decide where the connector may publish. Every publish path of a connector
+checks each transform output against the routing guard before publishing
+it. An output subject must be:
+
+- a literal subject within the length limit (`subjects.md`);
+- outside the server's reserved namespaces (`subjects.md`, "Reserved
+  namespaces"): a first token starting with `$` or equal to `_INBOX` is
+  the JetStream API, system events, store internals or a request inbox,
+  and a publish there is a command, not data;
+- free of a reserved notice suffix (a last token `error` or `oversize`,
+  "Reserved subject suffixes" above), so that notices stay unforgeable;
+- covered by one of the connector's data-subject patterns: the subjects
+  it declares it publishes to, and binds into its stream.
+
+A subject that fails any of these is a per-message error, reported as an
+`.error` notice on the **pre-transform** subject with a fixed error class
+in `Transform-Error`, never the subject itself: the subject may be built
+from message data, and the full error text goes to the connector's logs
+only. The connector's own notices are published outside the transform and
+are not subject to the guard. A connector never declares a reserved
+namespace as a data subject; one that does fails at startup.
+
+### Reserved header keys
+
+Header names beginning `Nats-` are the server's control headers:
+`Nats-Msg-Id` dedups, `Nats-Rollup` purges, the `Nats-Expected-*` family
+gates a publish, `Nats-TTL` expires a message. A mapping that sets a header
+whose name begins `Nats-` in any letter case fails that message, with the
+same notice shape as a subject failure and its own fixed class. The server
+matches the exact spelling, but a client that canonicalises header names
+on read turns `nats-rollup` into the live one, so every spelling is
+refused. A header the message arrived with is not the mapping's: a sink
+reading a stream sees the server's own headers (`Nats-Msg-Id`,
+`Nats-Stream-Source`) on its messages, and an inherited `Nats-` header
+passes through the mapping unchanged (its first value, which is what a
+mapping sees of any header), or is deleted by it. A mapping that
+sets a new `Nats-` header, changes an inherited one's value, or respells it
+fails the message: a mapping can neither add nor alter a control header.
+The guard on the publish path makes no such distinction: it rejects every
+`Nats-` header on an output, so a connector adds the control headers it
+means to send (its `Nats-Msg-Id`, say) after the guard has passed the
+message, and a connector relaying NATS messages to NATS strips the
+inherited ones before the guard or re-adds them deliberately after it.
+Only the exact prefix is reserved: `X-Nats-Trace` and `Natsy` are ordinary
+headers.
+
+In the Go SDK, `transform.Guard` implements the guard for every publish
+path (`transform.NewGuard(dataSubjectPatterns...)`, then `Check` on each
+output) and wraps `transform.ErrUnpublishableSubject` for a subject
+failure and `transform.ErrReservedHeader` for a reserved header. The
+Bloblang backend additionally rejects, on its own and with the same
+sentinels, a `Nats-*` header the mapping **set** and a **rewritten** output
+subject that is reserved or notice-suffixed; an inherited subject or
+`Nats-*` header passes through the backend, so a connector that consumes
+advisories, notices or a stream's messages can still transform them, and
+the guard decides whether they may be published as they are.
 
 ## Retention
 

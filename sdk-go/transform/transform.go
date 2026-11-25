@@ -13,7 +13,9 @@
 
 // Package transform defines the pluggable per-message transform stage for
 // native connectors: one interface, N backends, one blessed default
-// (Bloblang, in module sdk-go/bloblang).
+// (Bloblang, in module sdk-go/bloblang), and the routing guard (Guard) every
+// publish path runs over a transform's output before publishing it
+// (spec/transformer.md).
 package transform
 
 import (
@@ -26,7 +28,9 @@ import (
 
 // ErrUnpublishableSubject is wrapped by the per-message error (Result.Err)
 // for an output subject that isn't a literal subject or is longer than
-// subject.MaxSubjectLen bytes. Every backend wraps it, so a connector
+// subject.MaxSubjectLen bytes, and by Guard.Check for one that is in a
+// server-reserved namespace, carries a reserved notice suffix, or is not one
+// of the connector's data subjects. Every backend wraps it, so a connector
 // classifies that failure with errors.Is, whatever the backend. The error's
 // text quotes the subject, or an over-long subject's start, which may come
 // from message data, so it isn't fit for a wire header.

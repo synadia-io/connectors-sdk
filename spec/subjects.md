@@ -66,6 +66,34 @@ not reject them.
   subject that addresses the stream or consumer, the server stores it as a
   directory name, and the server rejects longer names.
 
+## Reserved namespaces
+
+A subject whose first token starts with `$` or is `_INBOX` belongs to the
+server or the platform, never to data: `$JS` is the JetStream API and its
+advisories, `$SYS` the system account's events and requests, `$KV` and `$O`
+the key-value and object store internals, `$CONNECTOR` this contract's
+status and admin subjects (`status.md`, `admin.md`), and `_INBOX` the
+request inboxes clients listen on. A publish there is a command, not data:
+`$JS.API.STREAM.PURGE.<stream>` purges a stream, and `_INBOX.<id>` answers
+someone else's request.
+
+A connector never publishes data to a reserved subject, never declares one
+as a data subject, and a transform may not route a message to one: an
+output subject in a reserved namespace fails that message
+(`transformer.md`, "Routing guard"). Only the first token is looked at, so
+the rule applies to patterns as it does to literals, and `events.$JS` or
+`events._INBOX` is not reserved. `_INBOX` is the default inbox prefix; a
+client with a custom prefix is not recognised here, and its inboxes are
+kept out of reach by the guard's other rule, that an output subject must
+be one of the connector's data subjects. The Go SDK implements the rule in
+`subject.Reserved`.
+
+| Subject | Reserved |
+|---|---|
+| `$JS.API.STREAM.PURGE.ORDERS`, `$SYS.REQ.SERVER.PING`, `$KV.x`, `$JS.>` | yes |
+| `_INBOX.abc`, `_INBOX` | yes |
+| `_INBOXX.a`, `_inbox.a`, `events._INBOX`, `events.$JS.x` | no |
+
 ## Subject length
 
 A subject a connector publishes to is at most **3072 bytes** long. A

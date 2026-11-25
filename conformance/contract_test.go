@@ -736,6 +736,156 @@ func TestStatusCountersIncrement(t *testing.T) {
 	}
 }
 
+// TestRoutingGuard enforces transformer.md's routing guard through the
+// fixture's `route:<target>` probe (README.md, "Fixture contract"): a
+// transform output may be published only to a literal subject that is one of
+// the connector's data subjects (here `<subject>.out.>`), never to a
+// server-reserved namespace (subjects.md: `$JS.API...` would purge a stream,
+// `_INBOX...` would answer someone's request), never to a subject carrying a
+// reserved notice suffix (notices are unforgeable), and never with a header
+// the server acts on (`Nats-*`). A refused output becomes an `.error` notice
+// on the pre-transform subject, carrying a fixed class, not the error text.
+//
+// Every probe goes over one connection and the fixture answers each on one
+// connection, so once the allowed probe, published last, has arrived, the
+// server has processed everything the fixture published before it. Delivery
+// to the test's subscriptions is ordered per subscription only (each has its
+// own goroutine), so the test then publishes a fence on every collected
+// subject and waits for it: anything the guard let through, and every
+// notice, is in front of the fence on its own subscription.
+func TestRoutingGuard(t *testing.T) {
+	bin := testconnBin(t)
+	srv, err := natsenv.Start(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Shutdown)
+	nc, err := srv.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+
+	const subject = "conf.testconn.route"
+	const allowedSubject = subject + ".out.a"
+	forbiddenSubjects := []string{
+		"$JS.API.STREAM.PURGE.CONFTEST",
+		"_INBOX.conftest.x",
+		subject + ".out.a.error",
+		"conf.other.subject",
+	}
+	watch := driver.WatchStatus(t, nc, "default", "testconn-route")
+	allowed, err := assert.Collect(nc, allowedSubject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(allowed.Close)
+	forbidden := make(map[string]*assert.Collector, len(forbiddenSubjects))
+	for _, s := range forbiddenSubjects {
+		c, err := assert.Collect(nc, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		forbidden[s] = c
+	}
+	notices, err := assert.Collect(nc, subject+".error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(notices.Close)
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	driver.Spawn(t, bin, srv.URL, driver.Identity{ConnectorID: "testconn-route"}.Env(), "-subject="+subject)
+	watch.WaitFor(t, 15*time.Second, func(d driver.StatusDoc) bool { return d.State == "running" })
+	awaitSubscribed(t, srv, subject)
+
+	probe := func(target, hk, hv string) {
+		t.Helper()
+		m := nats.NewMsg(subject)
+		m.Data = []byte("route:" + target)
+		if hk != "" {
+			m.Header.Set(hk, hv)
+		}
+		if err := nc.PublishMsg(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantClasses := []string{
+		"unpublishable-subject", // $JS.API...: server-reserved namespace
+		"unpublishable-subject", // _INBOX...: server-reserved namespace
+		"unpublishable-subject", // <subject>.out.a.error: reserved notice suffix
+		"unpublishable-subject", // conf.other.subject: not a data subject
+		"reserved-header",       // Nats-Rollup on an allowed subject
+	}
+	for _, s := range forbiddenSubjects {
+		probe(s, "", "")
+	}
+	probe(allowedSubject, "Nats-Rollup", "all")
+	probe(allowedSubject, "X-Trace", "1")
+
+	if _, err := allowed.WaitForAtLeast(1, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	got := allowed.Msgs()
+	if len(got) != 1 {
+		t.Fatalf("allowed subject received %d messages, want 1 (only the X-Trace probe)", len(got))
+	}
+	if string(got[0].Data) != "routed" || got[0].Header.Get("X-Trace") != "1" {
+		t.Errorf("allowed message = %q %v, want body \"routed\" with X-Trace: 1", got[0].Data, got[0].Header)
+	}
+	if got[0].Header.Get("Nats-Rollup") != "" {
+		t.Errorf("allowed message carries Nats-Rollup: the reserved-header probe was published")
+	}
+
+	// The fence: published by the test after the allowed message arrived, so
+	// it lands behind anything the fixture published on these subjects.
+	const fence = "fence"
+	fenced := map[string]*assert.Collector{subject + ".error": notices}
+	for _, s := range forbiddenSubjects {
+		fenced[s] = forbidden[s]
+	}
+	for s := range fenced {
+		if err := nc.Publish(s, []byte(fence)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for s, c := range fenced {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			msgs := c.Msgs()
+			if n := len(msgs); n > 0 && string(msgs[n-1].Data) == fence {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no fence on %s after 10s (%d messages)", s, len(msgs))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	ns := notices.Msgs()
+	if len(ns) != len(wantClasses)+1 {
+		t.Fatalf("notices on %s.error: got %d before the fence, want %d", subject, len(ns)-1, len(wantClasses))
+	}
+	for i, want := range wantClasses {
+		n := ns[i]
+		if n.Header.Get("Transform-Error") != want {
+			t.Errorf("notice %d: Transform-Error = %q, want %q", i, n.Header.Get("Transform-Error"), want)
+		}
+		if len(n.Data) != 0 {
+			t.Errorf("notice %d: payload = %q, want empty (transformer.md: notices are metadata-only)", i, n.Data)
+		}
+	}
+	for _, s := range forbiddenSubjects {
+		if msgs := forbidden[s].Msgs(); len(msgs) != 1 {
+			t.Errorf("forbidden subject %q received %d messages before the fence, want 0", s, len(msgs)-1)
+		}
+	}
+}
+
 // legalStateTransitions is the D-6 legal adjacency set: which state may
 // immediately follow which in a connector's own observed status stream.
 // lifecycle.md: park (D-15) is only ever reversed by resume/skip, both of

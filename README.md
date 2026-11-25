@@ -54,7 +54,7 @@ go get github.com/synadia-io/connectors-sdk/sdk-go/bloblang
 | `jsresource` | Creates or validates the stream a connector publishes into and the consumer it reads from |
 | `subject` | Subject, token and stream/consumer name rules |
 | `natsmsg` | Message size against `max_payload`, and header-name rules |
-| `transform` | The per-message transform interface that backends implement |
+| `transform` | The per-message transform interface that backends implement, and the routing guard every publish path checks transform output against |
 
 ## A minimal connector
 
