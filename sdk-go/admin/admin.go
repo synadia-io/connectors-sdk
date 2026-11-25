@@ -17,8 +17,10 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
@@ -31,10 +33,59 @@ import (
 // surface registers under.
 const serviceName = "connector-admin"
 
+// DefaultRequestTimeout is the deadline of the ctx a resume or skip request
+// hands the Controller when Start is given no WithRequestTimeout. A NATS
+// request carries no deadline of its own, so the service sets one, matching
+// what the common callers wait for a reply: the nats CLI's default request
+// timeout and the conformance suite's are both five seconds, so a Controller
+// still working past this deadline answers nobody.
+const DefaultRequestTimeout = 5 * time.Second
+
+// Option adjusts the admin service Start registers.
+type Option func(*options)
+
+// options is the service configuration the Options build.
+type options struct {
+	requestTimeout time.Duration
+}
+
+// WithRequestTimeout sets the deadline of the ctx a resume or skip request
+// hands the Controller, counted from the moment the request arrives. The
+// default is DefaultRequestTimeout; a connector whose Resume legitimately
+// takes longer raises it, and the caller then has to wait at least as long
+// for the reply (nats req --timeout). A non-positive d is ignored and the
+// default kept: Start is called once at startup, and refusing to serve the
+// admin surface over a bad option would leave the connector unresumable.
+func WithRequestTimeout(d time.Duration) Option {
+	return func(o *options) {
+		if d > 0 {
+			o.requestTimeout = d
+		}
+	}
+}
+
+// applyOptions folds opts into the service configuration, defaults first.
+func applyOptions(opts []Option) options {
+	o := options{requestTimeout: DefaultRequestTimeout}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// requestContext builds the context a resume or skip request hands the
+// Controller: o.requestTimeout from now, cancelled when the handler returns.
+func (o options) requestContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), o.requestTimeout)
+}
+
 // Controller is the connector-supplied behavior behind the admin surface
 // (spec/admin.md). Its methods are called synchronously from micro's
 // subscription callbacks, so implementations must be safe for concurrent
-// use and must not block indefinitely.
+// use and must not block indefinitely. The ctx handed to Resume and Skip is
+// the request's: it carries the request's deadline (WithRequestTimeout,
+// default DefaultRequestTimeout) and is cancelled once the request is
+// answered.
 type Controller interface {
 	// Status returns the connector's current status document, byte-for-byte
 	// the same shape published to the status subject (D-5) — this is what
@@ -44,12 +95,12 @@ type Controller interface {
 	// Resume un-parks the connector (lifecycle.md, D-15). It must return an
 	// error if the connector is not currently parked — resume reverses a
 	// park, it is not a generic restart (spec/admin.md).
-	Resume() error
+	Resume(ctx context.Context) error
 
 	// Skip skips the poison item identified by key, then behaves like
 	// Resume. It must return an error if skip is unsupported by this
 	// connector, or if the connector is not currently parked (spec/admin.md).
-	Skip(key string) error
+	Skip(ctx context.Context, key string) error
 }
 
 // skipRequest is the skip endpoint's request body (spec/admin.md).
@@ -72,10 +123,16 @@ type okResponse struct {
 // identity.AdminRoot(id). Endpoints hang off that root exactly as
 // spec/admin.md lays out: <root>.status, <root>.resume, <root>.skip.
 //
+// opts adjust the service; see Option. Without any, resume and skip hand the
+// Controller a ctx due DefaultRequestTimeout from the request's arrival.
+//
 // Start does not spawn any goroutine of its own; nats.go's micro package
 // owns the registered subscriptions' lifecycle for the returned Service's
 // lifetime. Callers stop the service with Service.Stop.
-func Start(nc *nats.Conn, id identity.Identity, version string, c Controller) (micro.Service, error) {
+func Start(
+	nc *nats.Conn, id identity.Identity, version string, c Controller, opts ...Option,
+) (micro.Service, error) {
+	o := applyOptions(opts)
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:    serviceName,
 		Version: version,
@@ -91,8 +148,8 @@ func Start(nc *nats.Conn, id identity.Identity, version string, c Controller) (m
 		handler micro.HandlerFunc
 	}{
 		{"status", func(req micro.Request) { handleStatus(req, c) }},
-		{"resume", func(req micro.Request) { handleResume(req, c) }},
-		{"skip", func(req micro.Request) { handleSkip(req, c) }},
+		{"resume", func(req micro.Request) { handleResume(req, c, o) }},
+		{"skip", func(req micro.Request) { handleSkip(req, c, o) }},
 	}
 	for _, ep := range endpoints {
 		if err := root.AddEndpoint(ep.name, ep.handler); err != nil {
@@ -114,11 +171,13 @@ func handleStatus(req micro.Request, c Controller) {
 }
 
 // handleResume implements the "resume" endpoint (spec/admin.md): no request
-// body, calls c.Resume(); nil responds okResponse, an error responds as a
-// standard micro error carrying the error's message.
-func handleResume(req micro.Request, c Controller) {
+// body, calls c.Resume with the request's context; nil responds okResponse,
+// an error responds as a standard micro error carrying the error's message.
+func handleResume(req micro.Request, c Controller, o options) {
 	defer recoverToError(req, "resume")
-	if err := c.Resume(); err != nil {
+	ctx, cancel := o.requestContext()
+	defer cancel()
+	if err := c.Resume(ctx); err != nil {
 		respondError(req, err.Error())
 		return
 	}
@@ -127,9 +186,10 @@ func handleResume(req micro.Request, c Controller) {
 
 // handleSkip implements the "skip" endpoint (spec/admin.md): parses the
 // {"key": string} request body, rejecting a malformed body or a missing key
-// with a micro error before ever calling the Controller, then calls
-// c.Skip(key) and responds exactly like handleResume.
-func handleSkip(req micro.Request, c Controller) {
+// with a micro error before ever calling the Controller, then calls c.Skip
+// with the request's context and the key and responds exactly like
+// handleResume.
+func handleSkip(req micro.Request, c Controller, o options) {
 	defer recoverToError(req, "skip")
 	var body skipRequest
 	if err := json.Unmarshal(req.Data(), &body); err != nil {
@@ -140,7 +200,9 @@ func handleSkip(req micro.Request, c Controller) {
 		respondError(req, `skip request missing required "key"`)
 		return
 	}
-	if err := c.Skip(body.Key); err != nil {
+	ctx, cancel := o.requestContext()
+	defer cancel()
+	if err := c.Skip(ctx, body.Key); err != nil {
 		respondError(req, err.Error())
 		return
 	}

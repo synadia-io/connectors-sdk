@@ -30,7 +30,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/synadia-io/connectors-sdk/sdk-go/spec"
+	"github.com/synadia-io/connectors-sdk/sdk-go/internal/cfgtags"
 )
 
 // configFileEnv is the single environment variable that puts a connector
@@ -161,7 +161,7 @@ func resetDocumentFields(v reflect.Value) {
 		if field.PkgPath != "" {
 			continue // unexported
 		}
-		if _, skip := spec.JSONFieldName(field); skip {
+		if _, skip := cfgtags.JSONFieldName(field); skip {
 			continue
 		}
 		fv := v.Field(i)
@@ -192,7 +192,7 @@ func applyStruct(v reflect.Value, present map[string]json.RawMessage) error {
 		if field.PkgPath != "" {
 			continue // unexported
 		}
-		name, skip := spec.JSONFieldName(field)
+		name, skip := cfgtags.JSONFieldName(field)
 		if skip {
 			continue
 		}
@@ -229,7 +229,7 @@ func applyStruct(v reflect.Value, present map[string]json.RawMessage) error {
 			continue
 		}
 
-		parsed, err := spec.ParseTags(field)
+		parsed, err := cfgtags.ParseTags(field)
 		if err != nil {
 			return fmt.Errorf("config: field %q: %w", name, err)
 		}
@@ -311,7 +311,7 @@ func scanForUnresolvedSecrets(v reflect.Value, path string) error {
 			if field.PkgPath != "" {
 				continue // unexported
 			}
-			name, skip := spec.JSONFieldName(field)
+			name, skip := cfgtags.JSONFieldName(field)
 			if skip {
 				continue
 			}

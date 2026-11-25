@@ -243,7 +243,7 @@ func TestOpen_DefaultBucketNeedsAStableID(t *testing.T) {
 				open = untouchedJS{JetStream: js, t: t}
 			}
 
-			st, err := checkpoint.Open(context.Background(), open, identity.Detect("source"), checkpoint.Options{Bucket: tt.bucket})
+			st, err := checkpoint.Open(context.Background(), open, identity.Resolve("source"), checkpoint.Options{Bucket: tt.bucket})
 			if tt.want == "" {
 				if !errors.Is(err, identity.ErrNoConnectorID) {
 					t.Fatalf("Open: err = %v, want ErrNoConnectorID", err)

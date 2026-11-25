@@ -31,7 +31,9 @@ import (
 // subject.MaxSubjectLen bytes, and by Guard.Check for one that is in a
 // server-reserved namespace, carries a reserved notice suffix, or is not one
 // of the connector's data subjects. Every backend wraps it, so a connector
-// classifies that failure with errors.Is, whatever the backend. The error's
+// classifies that failure with errors.Is, whatever the backend. The reasons
+// are not told apart by sentinel: a connector reports one error class for all
+// of them, and the reason is in the error text, for its logs. The error's
 // text quotes the subject, or an over-long subject's start, which may come
 // from message data, so it isn't fit for a wire header.
 var ErrUnpublishableSubject = errors.New("unpublishable subject")

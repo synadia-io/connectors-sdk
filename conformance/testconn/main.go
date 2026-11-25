@@ -92,15 +92,6 @@ func probe(cfg *Config) error {
 	return nil
 }
 
-// rtRef holds the *runtime.Runtime handed to the most recent run call. Run
-// is re-entered with the same Runtime (same connection, same status
-// publisher) on every resume for the life of the process (sdk-go/runtime's
-// harness constructs Runtime once at startup), so resume/skip — called by
-// the admin surface only while parked, i.e. never concurrently with a fresh
-// run() that would overwrite it mid-use — can reach the status publisher to
-// record their own effect.
-var rtRef atomic.Pointer[runtime.Runtime]
-
 // msgCount is the running counter published to <subject>.count for every
 // ordinary (non-poison) message received, proving the subscribe loop is
 // alive across park/resume/skip cycles.
@@ -129,8 +120,6 @@ const credsPoisonReason = "connect mongodb://dbuser:secretpw@db.internal:27017: 
 // cannot guarantee: this hook makes the race deterministic instead. A body
 // "route:<subject>" is the routing-guard probe, see route.
 func run(ctx context.Context, rt *runtime.Runtime, cfg *Config) error {
-	rtRef.Store(rt)
-
 	guard, err := transform.NewGuard(cfg.Subject + ".out.>")
 	if err != nil {
 		return fmt.Errorf("routing guard: %w", err)
@@ -228,20 +217,18 @@ func route(rt *runtime.Runtime, cfg *Config, guard *transform.Guard, in *nats.Ms
 }
 
 // resume implements the Resume hook: no state to reset, just a counter so a
-// caller can tell a plain resume happened at all.
-func resume() error {
-	if rt := rtRef.Load(); rt != nil {
-		rt.Status.Add("resumed", 1)
-	}
+// caller can tell a plain resume happened at all. rt is the Runtime run was
+// handed (same connection, same status publisher), so the counter lands in
+// the same status document.
+func resume(_ context.Context, rt *runtime.Runtime) error {
+	rt.Status.Add("resumed", 1)
 	return nil
 }
 
 // skip implements the Skip hook (admin.md): records the skipped key as its
 // own status counter, distinct from a plain resume, then returns nil so the
 // harness un-parks exactly as it would for resume.
-func skip(key string) error {
-	if rt := rtRef.Load(); rt != nil {
-		rt.Status.Add("skipped:"+key, 1)
-	}
+func skip(_ context.Context, rt *runtime.Runtime, key string) error {
+	rt.Status.Add("skipped:"+key, 1)
 	return nil
 }

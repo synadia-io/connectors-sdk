@@ -56,6 +56,10 @@ go get github.com/synadia-io/connectors-sdk/sdk-go/bloblang
 | `natsmsg` | Message size against `max_payload`, and header-name rules |
 | `transform` | The per-message transform interface that backends implement, and the routing guard every publish path checks transform output against |
 
+The harness package is named `runtime`; a connector that also imports the
+standard library's `runtime` or `runtime/debug` aliases one of them, e.g.
+`import goruntime "runtime"`.
+
 ## A minimal connector
 
 ```go

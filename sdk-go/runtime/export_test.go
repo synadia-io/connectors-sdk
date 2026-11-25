@@ -25,10 +25,14 @@ import (
 // signal wiring calls Main directly.
 
 // RunHarness is run: Main's body with the argument list and the shutdown
-// context injected.
-func RunHarness(ctx context.Context, args []string, name, version string, cfg any, caps []string, h Hooks) int {
-	return run(ctx, args, name, version, cfg, caps, h)
+// context injected, and opts applied the way Main applies them.
+func RunHarness(ctx context.Context, args []string, name, version string, cfg any, caps []string, h Hooks, opts ...Option) int {
+	return run(ctx, args, name, version, cfg, caps, h, applyOptions(opts))
 }
+
+// NoOption is an Option that changes nothing, for tests of the option
+// plumbing itself as distinct from any one Option's effect.
+var NoOption Option = func(*options) {}
 
 // ModeFromArgs is modeFromArgs: D-11 mode selection.
 var ModeFromArgs = modeFromArgs

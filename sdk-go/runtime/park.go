@@ -92,12 +92,20 @@ func parkReason(err error) (string, bool) {
 }
 
 // controller implements admin.Controller over the harness's park state
-// (D-8, D-15). It is the only writer of parked outside the serve loop, and
-// every field is guarded by mu because micro invokes these methods from its
-// own subscription callbacks.
+// (D-8, D-15). It is the only writer of parked outside the serve loop. The
+// park state is guarded by mu because micro invokes these methods from its
+// own subscription callbacks; the rest is immutable after construction.
 type controller struct {
 	pub   *status.Publisher
 	hooks Hooks
+
+	// rt is the Runtime Hooks.Run is handed; Resume and Skip get the same
+	// one.
+	rt *Runtime
+
+	// shutdown is the harness's context, done once the shutdown signal has
+	// arrived; the ctx a hook gets is cancelled with it.
+	shutdown context.Context
 
 	mu     sync.Mutex
 	parked bool
@@ -108,34 +116,55 @@ type controller struct {
 	resume chan struct{}
 }
 
-func newController(pub *status.Publisher, h Hooks) *controller {
-	return &controller{pub: pub, hooks: h, resume: make(chan struct{}, 1)}
+func newController(
+	pub *status.Publisher, h Hooks, rt *Runtime, shutdown context.Context,
+) *controller {
+	return &controller{
+		pub: pub, hooks: h, rt: rt, shutdown: shutdown, resume: make(chan struct{}, 1),
+	}
+}
+
+// hookContext derives the ctx a Resume or Skip hook gets from the admin
+// request's: it keeps the request's deadline and is also cancelled when the
+// harness shuts down, so a hook in flight when SIGTERM arrives is told, and
+// the drain is not held behind it (unpark holds the lock across the hook).
+func (c *controller) hookContext(req context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(req)
+	stop := context.AfterFunc(c.shutdown, cancel)
+	return ctx, func() { stop(); cancel() }
 }
 
 // Status returns the current status document, the same value published to
 // the status subject (D-5, spec/admin.md: "byte-for-byte the same shape").
 func (c *controller) Status() status.Document { return c.pub.Snapshot() }
 
-// Resume implements the admin `resume` endpoint: invoke Hooks.Resume, then
-// release the parked loop. It errors when the connector is not parked —
-// resume reverses a park, it is not a generic restart (spec/admin.md).
-func (c *controller) Resume() error {
+// Resume implements the admin `resume` endpoint: invoke Hooks.Resume with the
+// request's ctx (hookContext), then release the parked loop. It errors when
+// the connector is not parked — resume reverses a park, it is not a generic
+// restart (spec/admin.md).
+func (c *controller) Resume(ctx context.Context) error {
 	return c.unpark("resume", func() error {
 		if c.hooks.Resume == nil {
 			return nil
 		}
-		return c.hooks.Resume()
+		ctx, cancel := c.hookContext(ctx)
+		defer cancel()
+		return c.hooks.Resume(ctx, c.rt)
 	})
 }
 
 // Skip implements the admin `skip` endpoint: discard the poison item named
 // by key, then behave like Resume. It errors when the connector declines to
 // support skipping, and (like Resume) when it is not parked.
-func (c *controller) Skip(key string) error {
+func (c *controller) Skip(ctx context.Context, key string) error {
 	if c.hooks.Skip == nil {
 		return errors.New("skip: unsupported by this connector")
 	}
-	return c.unpark("skip", func() error { return c.hooks.Skip(key) })
+	return c.unpark("skip", func() error {
+		ctx, cancel := c.hookContext(ctx)
+		defer cancel()
+		return c.hooks.Skip(ctx, c.rt, key)
+	})
 }
 
 // unpark runs action and, only if it succeeds, releases the parked loop.

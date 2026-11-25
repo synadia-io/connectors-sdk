@@ -14,6 +14,7 @@
 package admin_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -78,7 +79,9 @@ type fakeController struct {
 	resumeErr error
 	skipErr   error
 
-	lastSkipKey string
+	lastSkipKey  string
+	sawDeadline  bool
+	lastDeadline time.Time
 }
 
 func (f *fakeController) Status() status.Document {
@@ -87,17 +90,44 @@ func (f *fakeController) Status() status.Document {
 	return f.statusDoc
 }
 
-func (f *fakeController) Resume() error {
+func (f *fakeController) Resume(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recordDeadline(ctx)
 	return f.resumeErr
 }
 
-func (f *fakeController) Skip(key string) error {
+func (f *fakeController) Skip(ctx context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recordDeadline(ctx)
 	f.lastSkipKey = key
 	return f.skipErr
+}
+
+// recordDeadline notes whether ctx carries a deadline and, if so, which; the
+// caller holds f.mu.
+func (f *fakeController) recordDeadline(ctx context.Context) {
+	if d, ok := ctx.Deadline(); ok {
+		f.sawDeadline = true
+		f.lastDeadline = d
+	}
+}
+
+// LastDeadline returns the deadline of the most recent Resume or Skip ctx
+// that carried one (zero if none did).
+func (f *fakeController) LastDeadline() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastDeadline
+}
+
+// SawDeadline reports whether every Resume or Skip call so far carried a ctx
+// with a deadline, the contract Controller's godoc states.
+func (f *fakeController) SawDeadline() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sawDeadline
 }
 
 func (f *fakeController) LastSkipKey() string {
@@ -125,14 +155,14 @@ func (p *panicController) Status() status.Document {
 	return p.statusDoc
 }
 
-func (p *panicController) Resume() error {
+func (p *panicController) Resume(context.Context) error {
 	if p.resumePanic {
 		panic("resume boom")
 	}
 	return nil
 }
 
-func (p *panicController) Skip(string) error {
+func (p *panicController) Skip(context.Context, string) error {
 	if p.skipPanic {
 		panic("skip boom")
 	}
@@ -319,6 +349,85 @@ func TestStart_ResumeEndpoint_Success(t *testing.T) {
 	}
 	if errHeader := msg.Header.Get(micro.ErrorHeader); errHeader != "" {
 		t.Fatalf("unexpected error response: %s", errHeader)
+	}
+	if !fc.SawDeadline() {
+		t.Error("Resume ctx carried no deadline; Controller promises the request's")
+	}
+}
+
+// TestStart_RequestTimeout guards the deadline Start puts on the ctx a resume
+// or skip request hands the Controller: DefaultRequestTimeout (5s) from the
+// request's arrival without an option, WithRequestTimeout's duration with
+// one, and a non-positive WithRequestTimeout ignored in favor of the default.
+// Measured from the client's send, the deadline lands the configured timeout
+// out plus the request's trip through the server, so it is never short of
+// the timeout and the slack allowed is on the far side only.
+func TestStart_RequestTimeout(t *testing.T) {
+	nc, cleanup := startTestServer(t)
+	defer cleanup()
+
+	for _, tt := range []struct {
+		name string
+		opts []admin.Option
+		want time.Duration
+	}{
+		{name: "default", opts: nil, want: admin.DefaultRequestTimeout},
+		{
+			name: "raised",
+			opts: []admin.Option{admin.WithRequestTimeout(30 * time.Second)},
+			want: 30 * time.Second,
+		},
+		{
+			name: "zero keeps default",
+			opts: []admin.Option{admin.WithRequestTimeout(0)},
+			want: admin.DefaultRequestTimeout,
+		},
+		{
+			name: "negative keeps default",
+			opts: []admin.Option{admin.WithRequestTimeout(-time.Second)},
+			want: admin.DefaultRequestTimeout,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := testIdentity()
+			fc := &fakeController{}
+			svc, err := admin.Start(nc, id, "1.0.0", fc, tt.opts...)
+			if err != nil {
+				t.Fatalf("admin.Start: %v", err)
+			}
+			defer func() { _ = svc.Stop() }()
+			root := identity.AdminRoot(id)
+
+			for _, ep := range []struct {
+				subject string
+				body    []byte
+			}{
+				{root + ".resume", nil},
+				{root + ".skip", []byte(`{"key":"k"}`)},
+			} {
+				// The deadline is set on the request's arrival, so measured
+				// from sent it is want plus the one-way trip, and a trip longer
+				// than the request timeout cannot have produced a reply.
+				const reqTimeout = 2 * time.Second
+				sent := time.Now()
+				msg, err := nc.Request(ep.subject, ep.body, reqTimeout)
+				if err != nil {
+					t.Fatalf("Request(%q): %v", ep.subject, err)
+				}
+				if errHeader := msg.Header.Get(micro.ErrorHeader); errHeader != "" {
+					t.Fatalf("Request(%q) returned an error: %s", ep.subject, errHeader)
+				}
+				deadline := fc.LastDeadline()
+				if deadline.IsZero() {
+					t.Fatalf("%s: Controller ctx carried no deadline", ep.subject)
+				}
+				remaining := deadline.Sub(sent)
+				if remaining < tt.want || remaining > tt.want+reqTimeout {
+					t.Errorf("%s: deadline %v after the request, want within %v over %v",
+						ep.subject, remaining.Round(time.Millisecond), reqTimeout, tt.want)
+				}
+			}
+		})
 	}
 }
 
