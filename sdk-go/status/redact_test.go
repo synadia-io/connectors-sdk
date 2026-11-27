@@ -15,6 +15,8 @@ package status_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +85,50 @@ func TestRedactReason_Exact(t *testing.T) {
 				t.Errorf("RedactReason(%q)\n got %q\nwant %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRedactReason_URLParseErrors builds its inputs from real url.Parse
+// errors rather than hand-written text. net/url quotes the URL it rejected
+// with its fragment cut off, so "#" in the password leaves no "@" to redact
+// up to; a space in the password breaks the userinfo pattern; and the piece
+// it choked on is repeated as the "port" (the password's head before "/" or
+// "?") or the bad escape. Each would reach the wire through a connector that
+// puts the raw error in a reason. Every piece of the password must be gone
+// present.
+func TestRedactReason_URLParseErrors(t *testing.T) {
+	// head and tail sit on either side of the character url.Parse cuts at.
+	const head, tail = "wJalrXUtn", "K7MDENG"
+	for _, sep := range []string{"/", "?", "#", "%zz", " "} {
+		t.Run(fmt.Sprintf("%q in password", sep), func(t *testing.T) {
+			raw := "mongodb://adm1n:" + head + sep + tail + "@db:27017"
+			_, err := url.Parse(raw)
+			if err == nil {
+				t.Fatalf("url.Parse(%q) error = nil, want the rejection this test is about", raw)
+			}
+			got := status.RedactReason("connect: " + err.Error())
+			for _, leak := range []string{head, tail, "adm1n", "%zz"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("RedactReason(%q)\n = %q, carries %q", err, got, leak)
+				}
+			}
+			if !strings.Contains(got, "REDACTED") {
+				t.Errorf("RedactReason(%q)\n = %q, want the REDACTED marker", err, got)
+			}
+		})
+	}
+}
+
+// TestRedactReason_URLParseErrorExact pins the shape the masking produces
+// for one real error, so a change in what is kept shows up as a diff.
+func TestRedactReason_URLParseErrorExact(t *testing.T) {
+	_, err := url.Parse("mongodb://adm1n:wJalrXUtn/K7MDENG@db:27017")
+	if err == nil {
+		t.Fatal("url.Parse error = nil, want a rejection")
+	}
+	want := `connect: parse "mongodb://REDACTED": invalid port "REDACTED" after host`
+	if got := status.RedactReason("connect: " + err.Error()); got != want {
+		t.Errorf("RedactReason\n got %q\nwant %q", got, want)
 	}
 }
 
