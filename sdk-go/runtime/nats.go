@@ -16,11 +16,15 @@ package runtime
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/synadia-io/connectors-sdk/sdk-go/status"
 )
 
 // The nexlet launch contract: the node injects the NATS endpoint and, in
@@ -78,6 +82,15 @@ func connectFromEnv(name string, onClosed func()) (*nats.Conn, error) {
 	if servers == "" {
 		return nil, fmt.Errorf("%s is required", envNatsServers)
 	}
+	// Parse the list before nats.Connect sees it: the connect error below is
+	// logged, and url.Parse's error for a URL it rejects quotes the part it
+	// choked on, which for a userinfo password holding "/", "?", "#" or "%"
+	// is a slice of the password with no "@" left for RedactReason to anchor
+	// on. An entry that fails to parse is reported by position only.
+	display, err := describeServerList(servers)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := []nats.Option{
 		nats.Name(name),
@@ -104,9 +117,60 @@ func connectFromEnv(name string, onClosed func()) (*nats.Conn, error) {
 
 	nc, err := nats.Connect(servers, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s: %w", servers, err)
+		// The URL list may carry userinfo (nats://user:pass@host) and the
+		// error is logged, so the list is echoed as describeServerList
+		// rendered it, and nats.go's own text is masked like a status reason
+		// as a backstop. Nothing matches on this error, so it wraps nothing.
+		return nil, fmt.Errorf("connect to %s: %s", display, status.RedactReason(err.Error()))
 	}
 	return nc, nil
+}
+
+// describeServerList renders a comma-separated server list for a log line:
+// each entry as scheme://host, or scheme://REDACTED@host when it carries
+// userinfo, with nothing of the password, path or query kept. It splits,
+// trims and parses the entries the way nats.go does (a bare host gets the
+// nats scheme, which is right while connectFromEnv never sets nats.Secure;
+// an empty entry is skipped), so an entry it accepts is one nats.Connect
+// accepts. The error for an entry that does not parse names the entry by
+// position and carries no part of the entry and none of url.Parse's text,
+// both of which can hold the password.
+//
+// When the list holds an "@" anywhere, an entry that parsed without
+// userinfo is refused as well: url.Parse ends the authority at "/", "?" and
+// "#", and the split ends an entry at ",", so a password with a digit head
+// and one of those characters ("user:1234/rest@host") parses as host "user"
+// port "1234", which this would otherwise echo and nats.Connect would then
+// name in its dial error. A list that mixes entries with and without
+// userinfo is refused with them; the launch contract hands out one cluster
+// under one set of credentials, so none is expected.
+func describeServerList(servers string) (string, error) {
+	hasUserinfo := strings.Contains(servers, "@")
+	var out []string
+	for i, entry := range strings.Split(servers, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if !strings.Contains(entry, "://") {
+			entry = "nats://" + entry
+		}
+		u, err := url.Parse(entry)
+		if err != nil || (hasUserinfo && u.User == nil) {
+			return "", fmt.Errorf("%s entry %d is not a valid URL", envNatsServers, i+1)
+		}
+		if u.User != nil {
+			out = append(out, u.Scheme+"://REDACTED@"+u.Host)
+		} else {
+			out = append(out, u.Scheme+"://"+u.Host)
+		}
+	}
+	if len(out) == 0 {
+		// Only separators and spaces: nats.Connect would fall back to its
+		// default URL, which is not what a launch contract hands out.
+		return "", fmt.Errorf("%s is required", envNatsServers)
+	}
+	return strings.Join(out, ","), nil
 }
 
 // credsOptionFromEnv builds the JWT+nkey auth option from the launch

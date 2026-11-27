@@ -105,6 +105,13 @@ func TestParseTags_Errors(t *testing.T) {
 			displayTag:  "order=not-a-number",
 			wantErrText: "order",
 		},
+		{
+			// A default is never scanned by the D-4 guard, so a reference
+			// there would reach the connector as its credential.
+			name:        "secret reference as default",
+			schemaTag:   "default=secret://db/pass",
+			wantErrText: "secret://",
+		},
 	}
 
 	for _, tt := range tests {

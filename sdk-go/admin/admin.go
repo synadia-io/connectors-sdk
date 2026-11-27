@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
@@ -86,6 +87,14 @@ func (o options) requestContext() (context.Context, context.CancelFunc) {
 // the request's: it carries the request's deadline (WithRequestTimeout,
 // default DefaultRequestTimeout) and is cancelled once the request is
 // answered.
+//
+// An error a method returns, or a panic value it escapes with, becomes the
+// request's micro error message, and nats.go records it in the service's
+// $SRV.STATS last_error too. Before it reaches the wire the message is
+// redacted like a status reason (status.RedactReason: URI userinfo is masked)
+// and capped at 1 KiB, so a driver error that quotes a connection string
+// cannot leak a credential into the ops plane. An empty message is sent as
+// "error", since micro refuses to send an error with no description.
 type Controller interface {
 	// Status returns the connector's current status document, byte-for-byte
 	// the same shape published to the status subject (D-5) — this is what
@@ -227,10 +236,47 @@ func respondOK(req micro.Request) {
 	_ = req.RespondJSON(okResponse{OK: true})
 }
 
+// maxErrorMessageBytes caps the message of every admin error response,
+// truncationMarker included, so what reaches the wire is never longer than
+// this. The message rides in a header and in $SRV.STATS last_error; neither
+// is a place for a multi-kilobyte stack dump or a driver's verbatim echo of
+// a request body.
+const maxErrorMessageBytes = 1024
+
+// truncationMarker ends a message that was cut to fit maxErrorMessageBytes.
+const truncationMarker = "...[truncated]"
+
 // respondError sends a standard micro error response (Nats-Service-Error /
-// Nats-Service-Error-Code headers, spec/admin.md "Errors") carrying msg. The
-// code is fixed at "500": spec/admin.md defines no taxonomy of admin error
-// codes, only that the standard micro headers carry the message.
+// Nats-Service-Error-Code headers, spec/admin.md "Errors") carrying msg. It
+// is the single choke point for every error message the admin surface
+// emits: msg is redacted with status.RedactReason and capped at
+// maxErrorMessageBytes (cut on a rune boundary to leave room for
+// truncationMarker) before it reaches the wire, because handlers pass
+// Controller errors and panic values through verbatim and those can quote a
+// connection string. The code is fixed at "500": spec/admin.md defines no
+// taxonomy of admin error codes, only that the standard micro headers carry
+// the message.
 func respondError(req micro.Request, msg string) {
-	_ = req.Error("500", msg, nil)
+	_ = req.Error("500", sanitizeErrorMessage(msg), nil)
+}
+
+// sanitizeErrorMessage redacts msg like a status reason and caps it at
+// maxErrorMessageBytes, marker included: a longer msg is cut on a rune
+// boundary to leave room for truncationMarker, which is appended. An empty
+// msg becomes "error": micro's Request.Error refuses an empty description,
+// and a refused response is a request that times out, which is worse than a
+// response that says nothing.
+func sanitizeErrorMessage(msg string) string {
+	msg = status.RedactReason(msg)
+	if msg == "" {
+		return "error"
+	}
+	if len(msg) <= maxErrorMessageBytes {
+		return msg
+	}
+	cut := maxErrorMessageBytes - len(truncationMarker)
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + truncationMarker
 }

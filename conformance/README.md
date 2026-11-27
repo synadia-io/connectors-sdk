@@ -4,7 +4,7 @@ Runs a connector *binary* (any language) against a real embedded NATS server, dr
 
 ## Layout
 
-- `contract_test.go` — the contract suite: the 13 tests every SDK's harness must pass (spec and check modes, the config document, the unresolved-secret guard, status, park/resume/skip, redaction, the SIGTERM drain, crash and restart). It runs against `testconn/` by default.
+- `contract_test.go` — the contract suite: the 15 tests every SDK's harness must pass (spec and check modes, the config document, the unresolved-secret guard, status, park/resume/skip, redaction, the SIGTERM drain, crash and restart, the routing guard, and the claim set: the whole suite's surface under a credential holding exactly the subjects `spec/credentials.md` lists). It runs against `testconn/` by default.
 - `testconn/` — the fixture connector on sdk-go: it subscribes to one subject, counts messages, and parks on special bodies, so the suite can exercise each contract surface.
 - `driver/` — builds a connector directory once per run, spawns the binary with the launch environment, waits on output markers, and asserts the lifecycle contract (`StopGraceful`: SIGTERM, drain, exit 0).
 - `natsenv/` — embedded NATS server with JetStream; start, stop and restart, so a test can simulate a server outage.

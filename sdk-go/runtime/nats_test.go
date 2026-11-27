@@ -15,6 +15,8 @@ package runtime
 
 import (
 	"encoding/base64"
+	"net"
+	"strings"
 	"testing"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
@@ -46,6 +48,79 @@ func TestConnectFromEnv_RetriesForever(t *testing.T) {
 
 	if nc.Opts.MaxReconnect != -1 {
 		t.Errorf("nc.Opts.MaxReconnect = %d, want -1 (retry forever)", nc.Opts.MaxReconnect)
+	}
+}
+
+// TestConnectFromEnv_FailureRedactsServerURL guards the connect error's text:
+// NEX_WORKLOAD_NATS_SERVERS may carry userinfo, and the error is logged, so
+// no part of the password may appear in it. A list that parses is echoed
+// host by host with the userinfo masked. A list with an entry that does not
+// parse is reported by the entry's position alone, because url.Parse's text
+// quotes the piece it rejected, which for a password holding "/", "?", "#"
+// or "%" is a slice of the password with no "@" left to redact up to, and a
+// "," or a space in the password defeats the per-entry split and the regex.
+func TestConnectFromEnv_FailureRedactsServerURL(t *testing.T) {
+	// A port nothing listens on, so the connection is refused at once (no
+	// RetryOnFailedConnect); taken from the kernel rather than assumed.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	// The password's pieces on either side of the character url.Parse cuts
+	// at; neither may survive into the error. The digit head is a valid port
+	// once the authority is cut short of the "@", so the entry parses.
+	const head, tail, digits = "zq9w", "xk4v", "1234"
+	invalid := "NEX_WORKLOAD_NATS_SERVERS entry 1 is not a valid URL"
+
+	tests := []struct {
+		name, servers string
+		want          []string
+	}{
+		{"refused", "nats://user:" + head + "@" + addr, []string{"nats://REDACTED@" + addr}},
+		{"no userinfo", "nats://" + addr, []string{"connect to nats://" + addr + ":"}},
+		{"bare host", addr, []string{"connect to nats://" + addr + ":"}},
+		{"list", "nats://user:" + head + "@" + addr + ", nats://user:" + head + "@[::1]:1",
+			[]string{"nats://REDACTED@" + addr + ",nats://REDACTED@[::1]:1"}},
+		// url.Parse ends the authority at "/", "?" and "#", so the password's
+		// head becomes the "port" it rejects.
+		{"slash in password", "nats://user:" + head + "/" + tail + "@" + addr, []string{invalid}},
+		{"question mark in password", "nats://user:" + head + "?" + tail + "@" + addr, []string{invalid}},
+		{"hash in password", "nats://user:" + head + "#" + tail + "@" + addr, []string{invalid}},
+		{"bad escape in password", "nats://user:" + head + "%zz" + tail + "@" + addr, []string{invalid}},
+		// The split on "," leaves two halves, neither a URL with userinfo.
+		{"comma in password", "nats://user:" + head + "," + tail + "@" + addr, []string{invalid}},
+		{"space in password", "nats://user:" + head + " " + tail + "@" + addr, []string{invalid}},
+		{"trailing junk", "nats://user:" + head + "@" + addr + " x", []string{invalid}},
+		// A digit head parses as the port of host "user", which nats.go would
+		// then name in its dial error; the entry is refused instead.
+		{"digits then slash", "nats://user:" + digits + "/" + tail + "@" + addr, []string{invalid}},
+		{"digits then comma", "nats://user:" + digits + "," + tail + "@" + addr, []string{invalid}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envNatsServers, tt.servers)
+			t.Setenv(envNatsNKey, "")
+			t.Setenv(envNatsB64JWT, "")
+
+			nc, err := connectFromEnv("test", nil)
+			if err == nil {
+				nc.Close()
+				t.Fatal("connectFromEnv() error = nil, want a failed connection")
+			}
+			for _, leak := range []string{head, tail, digits, "%zz", "user", "invalid port", "parse "} {
+				if strings.Contains(err.Error(), leak) {
+					t.Errorf("connectFromEnv() error = %q, carries %q from the URL", err, leak)
+				}
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("connectFromEnv() error = %q, want it to carry %q", err, want)
+				}
+			}
+		})
 	}
 }
 

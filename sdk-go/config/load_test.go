@@ -306,6 +306,142 @@ func TestLoad_NestedUnresolvedSecretGuard(t *testing.T) {
 	}
 }
 
+// dynamicConfig holds document values in the Go types encoding/json decodes
+// without a schema: a connector that passes part of its document through
+// untyped (an options bag, a driver-specific blob) still gets the guard.
+type dynamicConfig struct {
+	Name    string          `json:"name"`
+	Any     any             `json:"any"`
+	Options map[string]any  `json:"options"`
+	Items   []any           `json:"items"`
+	Raw     json.RawMessage `json:"raw"`
+}
+
+// TestLoad_UnresolvedSecretGuardScansUntypedValues pins that the guard reads
+// the document, not the struct: a "secret://" value the struct receives as
+// any, map[string]any, []any or json.RawMessage is what the node-side
+// resolver would have rewritten, so it is reported like a string field, by
+// its dotted path in the document.
+func TestLoad_UnresolvedSecretGuardScansUntypedValues(t *testing.T) {
+	tests := []struct {
+		name, doc, wantPath string
+	}{
+		{"any field", `{"name": "n", "any": "secret://a"}`, `"any"`},
+		{"map[string]any field", `{"name": "n", "options": {"uri": "secret://b"}}`, `"options.uri"`},
+		{"[]any field", `{"name": "n", "items": ["ok", "secret://c"]}`, `"items[1]"`},
+		{"RawMessage object", `{"name": "n", "raw": {"inner": {"pw": "secret://d"}}}`, `"raw.inner.pw"`},
+		{
+			"RawMessage array",
+			`{"name": "n", "raw": {"list": [1, {"k": "secret://e"}]}}`,
+			`"raw.list[1].k"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setDocEnv(t, writeDoc(t, t.TempDir(), tt.doc))
+			var cfg dynamicConfig
+			err := config.Load(&cfg)
+			if err == nil {
+				t.Fatal("Load() error = nil, want unresolved-secret error")
+			}
+			if !errors.Is(err, config.ErrUnresolvedSecret) {
+				t.Errorf("Load() error = %v, want it to wrap config.ErrUnresolvedSecret", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantPath) {
+				t.Errorf("Load() error = %v, want it to name %s", err, tt.wantPath)
+			}
+		})
+	}
+}
+
+// typedConfig holds fields whose Go types cannot receive a "secret://"
+// string: key material as []byte, a timestamp, a port.
+type typedConfig struct {
+	Name   string    `json:"name"`
+	TLSKey []byte    `json:"tls_key"`
+	Since  time.Time `json:"since"`
+	Port   int       `json:"port"`
+}
+
+// TestLoad_UnresolvedSecretGuardRunsBeforeDecode pins that the guard runs on
+// the document before the typed decode, so a leftover reference in a field
+// whose type cannot hold the string ([]byte fails base64, time.Time fails
+// its parse, int refuses a string) or in a field the struct does not have
+// is still reported as unresolved-secret, which the runtime parks on, rather
+// than as a decode error, which it exits on (spec/config.md: any field).
+func TestLoad_UnresolvedSecretGuardRunsBeforeDecode(t *testing.T) {
+	tests := []struct {
+		name, doc, wantPath string
+	}{
+		{"[]byte field", `{"name": "n", "tls_key": "secret://tls-key"}`, `"tls_key"`},
+		{"time.Time field", `{"name": "n", "since": "secret://ts"}`, `"since"`},
+		{"int field", `{"name": "n", "port": "secret://port"}`, `"port"`},
+		{"unknown field", `{"name": "n", "bogus": "secret://x"}`, `"bogus"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setDocEnv(t, writeDoc(t, t.TempDir(), tt.doc))
+			var cfg typedConfig
+			err := config.Load(&cfg)
+			if err == nil {
+				t.Fatal("Load() error = nil, want unresolved-secret error")
+			}
+			if !errors.Is(err, config.ErrUnresolvedSecret) {
+				t.Errorf("Load() error = %v, want it to wrap config.ErrUnresolvedSecret", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantPath) {
+				t.Errorf("Load() error = %v, want it to name %s", err, tt.wantPath)
+			}
+		})
+	}
+}
+
+// secretDefaultConfig carries the one default the tag grammar refuses: a
+// secret reference, which the D-4 guard over the document would never see.
+type secretDefaultConfig struct {
+	Name     string `json:"name"`
+	Password string `json:"password" schema:"default=secret://db/pass"`
+}
+
+// TestLoad_SecretReferenceDefaultIsRejected pins that a "secret://" default
+// fails Load outright rather than landing in the field unscanned. It is a
+// code error, not a deployment one, so it is not ErrUnresolvedSecret: the
+// runtime exits on it, and spec generation fails on the same tag first.
+func TestLoad_SecretReferenceDefaultIsRejected(t *testing.T) {
+	setDocEnv(t, writeDoc(t, t.TempDir(), `{"name": "n"}`))
+	var cfg secretDefaultConfig
+	err := config.Load(&cfg)
+	if err == nil {
+		t.Fatalf("Load() error = nil, want the default refused; password = %q", cfg.Password)
+	}
+	for _, want := range []string{"secret://", `"password"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Load() error = %v, want it to carry %s", err, want)
+		}
+	}
+	if errors.Is(err, config.ErrUnresolvedSecret) {
+		t.Errorf("Load() error = %v, want a code error, not ErrUnresolvedSecret", err)
+	}
+	if cfg.Password != "" {
+		t.Errorf("cfg.Password = %q, want it untouched after a failed Load", cfg.Password)
+	}
+}
+
+// TestLoad_UntypedMidStringSecretPrefixPassesThrough is the whole-value half
+// for untyped values: a mid-string occurrence inside a RawMessage or a
+// map[string]any is ordinary data, and the document loads.
+func TestLoad_UntypedMidStringSecretPrefixPassesThrough(t *testing.T) {
+	doc := `{"name": "n", "options": {"note": "x secret://y"}, "raw": ["see secret://z"], "any": 7}`
+	setDocEnv(t, writeDoc(t, t.TempDir(), doc))
+	var cfg dynamicConfig
+	if err := config.Load(&cfg); err != nil {
+		t.Fatalf("Load() error = %v, want mid-string occurrences to pass through", err)
+	}
+	if got := cfg.Options["note"]; got != "x secret://y" {
+		t.Errorf("cfg.Options[note] = %q, want it preserved", got)
+	}
+}
+
 // flagBoundConfig is a config struct the way connectors bind flags into it:
 // flag.StringVar(&cfg.Field, ...) fills the fields before Load runs. LogLevel
 // stands for a process-level knob the document can't carry (json:"-").

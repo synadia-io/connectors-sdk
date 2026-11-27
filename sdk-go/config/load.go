@@ -25,8 +25,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -85,18 +87,23 @@ func Path() (string, bool) {
 // struct fields so defaults and the guard below apply at every level.
 //
 // Load also enforces the D-4 unresolved-secret guard, document-wide and
-// schema-blind: after decoding and defaulting, Load walks
-// every string-typed value in dst, at every nesting level (nested structs,
-// slices, arrays, maps), regardless of any `display:"secret"` tag, and if a
-// value still carries the whole-value "secret://" prefix (the entire value,
-// not a substring), Load returns an error identifying the field by its
-// dotted json-name path. `display:"secret"` (D-13 x-display.secret) marks
-// where a reference is expected; it does not scope the guard, because the
-// nexlet's node-side resolver has no access to config_schema/x-display at
-// resolution time and must scan every field the same way. The prefix is
-// reserved document-wide: a literal value that happens to start with
-// "secret://" is prohibited, not passed through — there is no escaping
-// mechanism.
+// schema-blind: before decoding into dst, Load walks every string in the
+// document itself, at every nesting level (objects, arrays), regardless of
+// the Go type that receives it (a string field, an `any`, a map[string]any,
+// a []any, a json.RawMessage, a field of a type that cannot hold a string
+// and a field the struct does not have all count) and of any
+// `display:"secret"` tag, and if a value still carries the whole-value
+// "secret://" prefix (the entire value, not a substring), Load returns an
+// error wrapping ErrUnresolvedSecret and identifying the value by its dotted
+// path in the document ("a.b", "a.items[2]"). That is the view the nexlet's
+// node-side resolver has: it rewrites the document without any schema, so
+// the guard scans the same document the same way. `display:"secret"` (D-13
+// x-display.secret) marks where a reference is expected; it does not scope
+// the guard. A `schema:"default=..."` value is code, not document, and is
+// not scanned; a default that is itself a "secret://" reference is rejected
+// by the tag parser, so it never reaches a field. The prefix is reserved
+// document-wide: a literal value that happens to start with "secret://" is
+// prohibited, not passed through — there is no escaping mechanism.
 func Load(dst any) error {
 	path, ok := Path()
 	if !ok {
@@ -111,6 +118,22 @@ func Load(dst any) error {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("config: Load requires a non-nil pointer to struct, got %T", dst)
+	}
+
+	// The guard reads the document, not the struct, and runs before the
+	// typed decode: a value the struct receives as any, map[string]any,
+	// []any or json.RawMessage is still a string in the document, and a
+	// reference in a field whose type cannot hold a string ([]byte, int,
+	// time.Time) or in a field the struct does not have would otherwise fail
+	// the decode first, with an error that does not wrap ErrUnresolvedSecret,
+	// and the runtime would exit instead of parking (spec/config.md: a
+	// leftover reference in any field is unresolved-secret).
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("config: decode %s: %w", path, err)
+	}
+	if err := scanForUnresolvedSecrets(doc, ""); err != nil {
+		return err
 	}
 
 	// Load into a copy and write it back only once the whole document has
@@ -135,9 +158,6 @@ func Load(dst any) error {
 	}
 
 	if err := applyStruct(work.Elem(), present); err != nil {
-		return err
-	}
-	if err := scanForUnresolvedSecrets(work.Elem(), ""); err != nil {
 		return err
 	}
 
@@ -184,7 +204,7 @@ func decodesAsValue(t reflect.Type) bool {
 // applyStruct walks v's exported fields, applying schema defaults to fields
 // absent from present (D-14), recursing into nested struct fields with their
 // own sub-document's present map. The D-4 secret guard is a separate,
-// schema-blind pass (scanForUnresolvedSecrets) run once defaults are applied.
+// schema-blind pass over the raw document (scanForUnresolvedSecrets).
 func applyStruct(v reflect.Value, present map[string]json.RawMessage) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
@@ -289,61 +309,39 @@ func applyDefault(fv reflect.Value, raw string) error {
 }
 
 // scanForUnresolvedSecrets implements the D-4 unresolved-secret guard,
-// document-wide and schema-blind: it walks every value
-// reachable from v — structs, pointers, slices/arrays, maps — and reports an
-// error naming path the first string whose entire value still carries the
-// whole-value "secret://" prefix. It deliberately ignores struct tags
-// entirely (no ParsedTags/Display lookup): the nexlet's node-side resolver
-// has no schema access either, so the connector-side guard mirrors that same
-// schema-blind scan rather than trusting x-display to narrow it.
-func scanForUnresolvedSecrets(v reflect.Value, path string) error {
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			return nil
-		}
-		return scanForUnresolvedSecrets(v.Elem(), path)
-
-	case reflect.Struct:
-		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
-			if field.PkgPath != "" {
-				continue // unexported
-			}
-			name, skip := cfgtags.JSONFieldName(field)
-			if skip {
-				continue
-			}
-			childPath := name
+// document-wide and schema-blind: it walks the decoded JSON document v
+// (map[string]any objects, []any arrays, string leaves) and reports an error
+// naming the dotted path of the first string whose entire value still
+// carries the whole-value "secret://" prefix. It reads the document rather
+// than the struct it was decoded into, so a value the struct holds as any,
+// map[string]any, []any or json.RawMessage is scanned like any other: the
+// nexlet's node-side resolver has no schema either and rewrites the document
+// itself, so the connector-side guard mirrors that same schema-blind scan.
+// Object keys are visited in sorted order so the reported path is stable.
+func scanForUnresolvedSecrets(v any, path string) error {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			childPath := k
 			if path != "" {
-				childPath = path + "." + name
+				childPath = path + "." + k
 			}
-			if err := scanForUnresolvedSecrets(v.Field(i), childPath); err != nil {
+			if err := scanForUnresolvedSecrets(x[k], childPath); err != nil {
 				return err
 			}
 		}
 		return nil
 
-	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			if err := scanForUnresolvedSecrets(v.Index(i), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+	case []any:
+		for i, item := range x {
+			if err := scanForUnresolvedSecrets(item, fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
 			}
 		}
 		return nil
 
-	case reflect.Map:
-		for _, k := range v.MapKeys() {
-			childPath := fmt.Sprintf("%s[%v]", path, k.Interface())
-			if err := scanForUnresolvedSecrets(v.MapIndex(k), childPath); err != nil {
-				return err
-			}
-		}
-		return nil
-
-	case reflect.String:
-		if strings.HasPrefix(v.String(), secretPrefix) {
+	case string:
+		if strings.HasPrefix(x, secretPrefix) {
 			return fmt.Errorf(
 				"config: field %q: %w: value still carries a %q reference; "+
 					"node-side secret resolution did not happen (D-4)", path, ErrUnresolvedSecret, secretPrefix)

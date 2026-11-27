@@ -21,6 +21,7 @@
 package cfgtags
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -91,6 +92,13 @@ func ParseTags(field reflect.StructField) (ParsedTags, error) {
 		case "required":
 			pt.Required = true
 		case "default":
+			// A default is code, not document, so the D-4 guard over the
+			// document never sees it; a reference here would reach the
+			// connector as its credential. It fails here instead, at spec
+			// generation and at Load.
+			if strings.HasPrefix(value, "secret://") {
+				return pt, errors.New("schema tag: default must not be a secret:// reference")
+			}
 			pt.Default = value
 			pt.HasDefault = true
 		case "enum":
