@@ -396,6 +396,37 @@ func TestLoad_UnresolvedSecretGuardRunsBeforeDecode(t *testing.T) {
 	}
 }
 
+// secretDefaultConfig carries the one default the tag grammar refuses: a
+// secret reference, which the D-4 guard over the document would never see.
+type secretDefaultConfig struct {
+	Name     string `json:"name"`
+	Password string `json:"password" schema:"default=secret://db/pass"`
+}
+
+// TestLoad_SecretReferenceDefaultIsRejected pins that a "secret://" default
+// fails Load outright rather than landing in the field unscanned. It is a
+// code error, not a deployment one, so it is not ErrUnresolvedSecret: the
+// runtime exits on it, and spec generation fails on the same tag first.
+func TestLoad_SecretReferenceDefaultIsRejected(t *testing.T) {
+	setDocEnv(t, writeDoc(t, t.TempDir(), `{"name": "n"}`))
+	var cfg secretDefaultConfig
+	err := config.Load(&cfg)
+	if err == nil {
+		t.Fatalf("Load() error = nil, want the default refused; password = %q", cfg.Password)
+	}
+	for _, want := range []string{"secret://", `"password"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Load() error = %v, want it to carry %s", err, want)
+		}
+	}
+	if errors.Is(err, config.ErrUnresolvedSecret) {
+		t.Errorf("Load() error = %v, want a code error, not ErrUnresolvedSecret", err)
+	}
+	if cfg.Password != "" {
+		t.Errorf("cfg.Password = %q, want it untouched after a failed Load", cfg.Password)
+	}
+}
+
 // TestLoad_UntypedMidStringSecretPrefixPassesThrough is the whole-value half
 // for untyped values: a mid-string occurrence inside a RawMessage or a
 // map[string]any is ordinary data, and the document loads.

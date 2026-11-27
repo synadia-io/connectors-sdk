@@ -100,9 +100,10 @@ func Path() (string, bool) {
 // the guard scans the same document the same way. `display:"secret"` (D-13
 // x-display.secret) marks where a reference is expected; it does not scope
 // the guard. A `schema:"default=..."` value is code, not document, and is
-// not scanned. The prefix is reserved document-wide: a literal value that
-// happens to start with "secret://" is prohibited, not passed through —
-// there is no escaping mechanism.
+// not scanned; a default that is itself a "secret://" reference is rejected
+// by the tag parser, so it never reaches a field. The prefix is reserved
+// document-wide: a literal value that happens to start with "secret://" is
+// prohibited, not passed through — there is no escaping mechanism.
 func Load(dst any) error {
 	path, ok := Path()
 	if !ok {
