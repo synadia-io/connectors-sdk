@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
@@ -34,6 +36,35 @@ type Server struct {
 	Port     int
 	URL      string
 	storeDir string
+	log      *logCapture
+}
+
+// logCapture is the server.Logger the embedded server writes to: every
+// line the server logs at notice, warning, error or fatal level, kept in
+// memory so a test can assert on what the server itself reported about a
+// client. Debug and trace are off, so those two methods are never called.
+type logCapture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logCapture) record(format string, v ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, v...))
+}
+
+func (l *logCapture) Noticef(format string, v ...any) { l.record(format, v...) }
+func (l *logCapture) Warnf(format string, v ...any)   { l.record(format, v...) }
+func (l *logCapture) Fatalf(format string, v ...any)  { l.record(format, v...) }
+func (l *logCapture) Errorf(format string, v ...any)  { l.record(format, v...) }
+func (l *logCapture) Debugf(format string, v ...any)  { l.record(format, v...) }
+func (l *logCapture) Tracef(format string, v ...any)  { l.record(format, v...) }
+
+func (l *logCapture) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.lines...)
 }
 
 // Option adjusts the server options Start builds, after the defaults
@@ -89,6 +120,15 @@ func (s *Server) run() error {
 		return fmt.Errorf("nats server failed to start")
 	}
 	s.srv = srv
+	// Capture the server's own log (the test options run it with logging
+	// off). SetLogger takes effect for every log call after it, which covers
+	// everything a client does, since no client can connect before run
+	// returns. Restart keeps the capture, lines from before the restart
+	// included.
+	if s.log == nil {
+		s.log = &logCapture{}
+	}
+	srv.SetLogger(s.log, false, false)
 
 	// Pin the concrete port so a later Restart binds the same address (clients
 	// reconnect to the URL they were given).
@@ -122,6 +162,23 @@ func (s *Server) Shutdown() {
 	if s.storeDir != "" {
 		_ = os.RemoveAll(s.storeDir)
 	}
+}
+
+// Violations returns the permissions violations the server has logged so
+// far, in order. The server logs one as `Publish Violation - Subject
+// "<subject>"` or `Subscription Violation - Subject "<subject>", SID <sid>`,
+// prefixed with the offending client's address and id, so a test can tell
+// whether a spawned connector touched a subject outside its claim set
+// without relying on the connector's client library printing the async
+// error it was sent, which a client library in another language need not do.
+func (s *Server) Violations() []string {
+	var out []string
+	for _, line := range s.log.snapshot() {
+		if strings.Contains(line, "Violation - Subject") {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // HasInterest reports whether any client of the global account has a

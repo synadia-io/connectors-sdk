@@ -1109,23 +1109,22 @@ func TestCrashAndRestart(t *testing.T) {
 // and the response permission, with the server's allow_responses defaults.
 // It then drives every surface the rest of this suite drives (status,
 // discovery, admin status, data in and out, the routing guard's notice,
-// park, resume and skip) and asserts the fixture's output records no
-// permissions violation. The point is the negative: an SDK change that
+// park, resume and skip) and asserts the server logged no permissions
+// violation against it. The point is the negative: an SDK change that
 // starts publishing or subscribing anywhere the table does not list fails
 // here, and the table has to grow with it. The checkpoint bucket and
 // JetStream rows have their own tests (sdk-go/checkpoint and
 // sdk-go/jsresource, TestClaimSetIsEnough).
 //
-// The server sends a permissions violation to the offending client as an
-// async error, which nats.go's default handler prints to stderr; the harness
-// sets no handler of its own, and micro wraps the connection's handler and
-// forwards to it, so the driver's captured output carries it. Two controls
-// keep the negative honest: a publish outside the allow list from a plain
-// connection as the same user must draw a violation (the server enforces the
-// permissions), and a second fixture under a user missing one row, the status
-// publish, must print one (the output channel carries them). A harness that
-// swallowed its async errors, or a server that ignored its users, could not
-// pass vacuously.
+// The violations are read from the server's own log (natsenv.Violations),
+// not from the fixture's output: the server logs every violation it sends,
+// whichever client library the fixture uses, while a client library in
+// another language need not print the async error it receives. One control
+// keeps the negative honest: a publish outside the allow list from a plain
+// connection as the same user must show up in that log, which proves the
+// server enforces the permissions and the capture sees it. A server that
+// ignored its users, or a capture that missed the log, could not pass
+// vacuously.
 func TestClaimSetIsEnough(t *testing.T) {
 	bin := testconnBin(t)
 
@@ -1159,15 +1158,8 @@ func TestClaimSetIsEnough(t *testing.T) {
 	}}
 	// nil Permissions: the observer is unrestricted.
 	observer := &server.User{Username: "observer", Password: "observer"}
-	// short lacks one row, the status publish; the second control below runs
-	// the fixture as short and expects the violation to show in its output.
-	short := &server.User{Username: "short", Password: "short", Permissions: &server.Permissions{
-		Publish:   &server.SubjectPermission{Allow: []string{subject + ".count"}},
-		Subscribe: conn.Permissions.Subscribe,
-		Response:  conn.Permissions.Response,
-	}}
 
-	srv, err := natsenv.Start(0, natsenv.WithUsers(conn, observer, short))
+	srv, err := natsenv.Start(0, natsenv.WithUsers(conn, observer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1178,35 +1170,27 @@ func TestClaimSetIsEnough(t *testing.T) {
 	}
 	t.Cleanup(nc.Close)
 
-	// The control: the conn user's permissions bite. A publish outside the
-	// allow list from a connection authenticated as conn draws a violation.
-	violations := make(chan error, 1)
-	control, err := srv.Connect(nats.UserInfo("conn", "conn"), nats.ErrorHandler(
-		func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			select {
-			case violations <- err:
-			default:
-			}
-		}))
+	// The control: the conn user's permissions bite, and the server's log
+	// shows it. A publish outside the allow list from a connection
+	// authenticated as conn is logged as a violation naming the subject;
+	// the assertion at the end reads the same log, so if this control stops
+	// arriving that assertion has gone blind, not green.
+	const controlSubject = "conf.not.granted"
+	// The handler swallows the async error so nats.go's default one does not
+	// print it over the test output; the server log is what is asserted on.
+	control, err := srv.Connect(nats.UserInfo("conn", "conn"),
+		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(control.Close)
-	if err := control.Publish("conf.not.granted", []byte("x")); err != nil {
+	if err := control.Publish(controlSubject, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-violations:
-		if !strings.Contains(strings.ToLower(err.Error()), "permissions violation") {
-			t.Fatalf("control publish: got %v, want a permissions violation", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("control publish outside the allow list drew no permissions violation: " +
-			"the user's permissions are not enforced, so the test would prove nothing")
-	}
+	awaitViolation(t, srv, controlSubject)
 
 	watch := driver.WatchStatus(t, nc, namespace, instanceID)
 	counts, err := assert.Collect(nc, subject+".count")
@@ -1325,27 +1309,40 @@ func TestClaimSetIsEnough(t *testing.T) {
 	})
 	awaitSubscribed(t, srv, subject)
 
-	// A clean drain publishes the final status document; then the output is
-	// complete, and must record no violation anywhere along the way.
+	// A clean drain publishes the final status document; then the fixture
+	// has done everything it will do, and the server must have logged no
+	// violation but the control's. The server's log is read rather than the
+	// fixture's output because the server logs every violation it sends,
+	// whichever client library the fixture uses and whether or not that
+	// library prints the async error.
 	p.StopGraceful(t)
-	if out := p.Output(); strings.Contains(strings.ToLower(out), violationText) {
+	for _, line := range srv.Violations() {
+		if strings.Contains(line, fmt.Sprintf("%q", controlSubject)) {
+			continue
+		}
 		t.Errorf("the fixture drew a permissions violation under the D-10 claim set; "+
-			"either the SDK touches a subject the table does not list, or the table must grow:\n%s", out)
+			"either the SDK touches a subject the table does not list, or the table must grow:\n%s",
+			line)
 	}
-
-	// The second control: the same fixture under short, whose claim set lacks
-	// the status row, prints the violation its first status publish draws. If
-	// this stops arriving, the assertion above has gone blind, not green.
-	shortURL := fmt.Sprintf("nats://short:short@127.0.0.1:%d", srv.Port)
-	p2 := driver.Spawn(t, bin, shortURL, driver.Identity{ConnectorID: instanceID + "-short"}.Env(),
-		"-subject="+subject)
-	p2.WaitOutput(t, violationText, 15*time.Second)
-	p2.StopGraceful(t)
 }
 
-// violationText is the lower-cased core of the server's "Permissions Violation
-// for Publish to ..." error, as nats.go's default handler prints it.
-const violationText = "permissions violation"
+// awaitViolation blocks until the server has logged a permissions violation
+// naming subject, or fails the test after a timeout.
+func awaitViolation(t *testing.T, srv *natsenv.Server, subject string) {
+	t.Helper()
+	want := fmt.Sprintf("%q", subject)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range srv.Violations() {
+			if strings.Contains(line, want) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no permissions violation for %s in the server log: the user's permissions "+
+		"are not enforced or not captured, so the test would prove nothing", subject)
+}
 
 // awaitSubscribed blocks until the fixture's Run hook is subscribed to
 // subject, by asking the embedded server whether anything subscribes to it
