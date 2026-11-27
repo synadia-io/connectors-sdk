@@ -25,9 +25,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -86,10 +87,11 @@ func Path() (string, bool) {
 // struct fields so defaults and the guard below apply at every level.
 //
 // Load also enforces the D-4 unresolved-secret guard, document-wide and
-// schema-blind: after decoding and defaulting, Load walks every string in
-// the document itself, at every nesting level (objects, arrays), regardless
-// of the Go type that receives it (a string field, an `any`, a
-// map[string]any, a []any or a json.RawMessage all count) and of any
+// schema-blind: before decoding into dst, Load walks every string in the
+// document itself, at every nesting level (objects, arrays), regardless of
+// the Go type that receives it (a string field, an `any`, a map[string]any,
+// a []any, a json.RawMessage, a field of a type that cannot hold a string
+// and a field the struct does not have all count) and of any
 // `display:"secret"` tag, and if a value still carries the whole-value
 // "secret://" prefix (the entire value, not a substring), Load returns an
 // error wrapping ErrUnresolvedSecret and identifying the value by its dotted
@@ -117,6 +119,22 @@ func Load(dst any) error {
 		return fmt.Errorf("config: Load requires a non-nil pointer to struct, got %T", dst)
 	}
 
+	// The guard reads the document, not the struct, and runs before the
+	// typed decode: a value the struct receives as any, map[string]any,
+	// []any or json.RawMessage is still a string in the document, and a
+	// reference in a field whose type cannot hold a string ([]byte, int,
+	// time.Time) or in a field the struct does not have would otherwise fail
+	// the decode first, with an error that does not wrap ErrUnresolvedSecret,
+	// and the runtime would exit instead of parking (spec/config.md: a
+	// leftover reference in any field is unresolved-secret).
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("config: decode %s: %w", path, err)
+	}
+	if err := scanForUnresolvedSecrets(doc, ""); err != nil {
+		return err
+	}
+
 	// Load into a copy and write it back only once the whole document has
 	// loaded, so a document that fails leaves dst as it was.
 	work := reflect.New(v.Elem().Type())
@@ -139,17 +157,6 @@ func Load(dst any) error {
 	}
 
 	if err := applyStruct(work.Elem(), present); err != nil {
-		return err
-	}
-	// The guard reads the document, not the struct: a value the struct
-	// receives as any, map[string]any, []any or json.RawMessage is still a
-	// string in the document, and the node-side resolver would have
-	// rewritten it there.
-	var doc any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("config: decode %s: %w", path, err)
-	}
-	if err := scanForUnresolvedSecrets(doc, ""); err != nil {
 		return err
 	}
 
@@ -313,12 +320,7 @@ func applyDefault(fv reflect.Value, raw string) error {
 func scanForUnresolvedSecrets(v any, path string) error {
 	switch x := v.(type) {
 	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
+		for _, k := range slices.Sorted(maps.Keys(x)) {
 			childPath := k
 			if path != "" {
 				childPath = path + "." + k
