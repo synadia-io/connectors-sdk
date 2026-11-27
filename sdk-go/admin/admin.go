@@ -236,33 +236,36 @@ func respondOK(req micro.Request) {
 	_ = req.RespondJSON(okResponse{OK: true})
 }
 
-// maxErrorMessageBytes caps the message of every admin error response. The
-// message rides in a header and in $SRV.STATS last_error; neither is a
-// place for a multi-kilobyte stack dump or a driver's verbatim echo of a
-// request body.
+// maxErrorMessageBytes caps the message of every admin error response,
+// truncationMarker included, so what reaches the wire is never longer than
+// this. The message rides in a header and in $SRV.STATS last_error; neither
+// is a place for a multi-kilobyte stack dump or a driver's verbatim echo of
+// a request body.
 const maxErrorMessageBytes = 1024
 
-// truncationMarker ends a message cut at maxErrorMessageBytes.
+// truncationMarker ends a message that was cut to fit maxErrorMessageBytes.
 const truncationMarker = "...[truncated]"
 
 // respondError sends a standard micro error response (Nats-Service-Error /
 // Nats-Service-Error-Code headers, spec/admin.md "Errors") carrying msg. It
 // is the single choke point for every error message the admin surface
 // emits: msg is redacted with status.RedactReason and capped at
-// maxErrorMessageBytes (cut on a rune boundary, truncationMarker appended)
-// before it reaches the wire, because handlers pass Controller errors and
-// panic values through verbatim and those can quote a connection string. The
-// code is fixed at "500": spec/admin.md defines no taxonomy of admin error
-// codes, only that the standard micro headers carry the message.
+// maxErrorMessageBytes (cut on a rune boundary to leave room for
+// truncationMarker) before it reaches the wire, because handlers pass
+// Controller errors and panic values through verbatim and those can quote a
+// connection string. The code is fixed at "500": spec/admin.md defines no
+// taxonomy of admin error codes, only that the standard micro headers carry
+// the message.
 func respondError(req micro.Request, msg string) {
 	_ = req.Error("500", sanitizeErrorMessage(msg), nil)
 }
 
 // sanitizeErrorMessage redacts msg like a status reason and caps it at
-// maxErrorMessageBytes, cutting on a rune boundary and appending
-// truncationMarker when it does. An empty msg becomes "error": micro's
-// Request.Error refuses an empty description, and a refused response is a
-// request that times out, which is worse than a response that says nothing.
+// maxErrorMessageBytes, marker included: a longer msg is cut on a rune
+// boundary to leave room for truncationMarker, which is appended. An empty
+// msg becomes "error": micro's Request.Error refuses an empty description,
+// and a refused response is a request that times out, which is worse than a
+// response that says nothing.
 func sanitizeErrorMessage(msg string) string {
 	msg = status.RedactReason(msg)
 	if msg == "" {
@@ -271,7 +274,7 @@ func sanitizeErrorMessage(msg string) string {
 	if len(msg) <= maxErrorMessageBytes {
 		return msg
 	}
-	cut := maxErrorMessageBytes
+	cut := maxErrorMessageBytes - len(truncationMarker)
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}

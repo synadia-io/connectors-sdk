@@ -569,8 +569,8 @@ func TestStart_EmptyErrorMessageStillAnswers(t *testing.T) {
 }
 
 // TestStart_ErrorMessagesAreCapped guards the cap on the same choke point: a
-// Controller error of several kilobytes is cut to the documented bound plus
-// a truncation marker before it reaches the header.
+// Controller error of several kilobytes is cut to the documented bound,
+// truncation marker included, before it reaches the header.
 func TestStart_ErrorMessagesAreCapped(t *testing.T) {
 	nc, cleanup := startTestServer(t)
 	defer cleanup()
@@ -590,11 +590,9 @@ func TestStart_ErrorMessagesAreCapped(t *testing.T) {
 	if !strings.HasSuffix(got, admin.TruncationMarker) {
 		t.Errorf("Nats-Service-Error does not end with the truncation marker %q", admin.TruncationMarker)
 	}
-	if limit := admin.MaxErrorMessageBytes + len(admin.TruncationMarker); len(got) > limit {
-		t.Errorf("Nats-Service-Error is %d bytes, want at most %d", len(got), limit)
-	}
-	if len(got) < admin.MaxErrorMessageBytes {
-		t.Errorf("Nats-Service-Error is %d bytes, want the full cap of %d kept",
+	// ASCII input cuts exactly, so the marker-included cap is met to the byte.
+	if len(got) != admin.MaxErrorMessageBytes {
+		t.Errorf("Nats-Service-Error is %d bytes, want exactly the cap of %d, marker included",
 			len(got), admin.MaxErrorMessageBytes)
 	}
 }
